@@ -7,7 +7,6 @@ var net = require('net');
 var COMMAND_PORT_L = 8124;
 var LOOPBACK_IP = '127.0.0.1';
 var HOST_NAME = 'FAKE FTP_SERVER';
-var IDLE_TIMEOUT_DELAY = 10000;
 
 var CRLF = '\r\n', EOL = CRLF;
 var SP = ' ';
@@ -23,6 +22,7 @@ function FTPServer (configuration)
         this.configuration = {};
         this.configuration.name = HOST_NAME;
         this.configuration.port = COMMAND_PORT_L;
+        this.configuration.idletimeout = 0;
         console.info('Created default configuration',this.configuration);
     }
     
@@ -33,10 +33,29 @@ FTPServer.prototype.ondata = function (controlSocket,data)
 {
       var cmd, 
           dataStr = data.toString(),
-          dataSplit = dataStr.split(SP);
+          dataSplit = dataStr.split(SP),
+          paramNr,
+          param = [],
+          currentParam;
     
       console.log('data',data,dataStr,dataSplit);
-   
+
+      cmd = dataSplit[0];
+
+      for (paramNr=1;paramNr<dataSplit.length;paramNr++)
+      {
+          currentParam = dataSplit[paramNr];
+          if (paramNr == dataSplit.length-1)
+          {
+              // Strip of EOL on last parameter
+              if (EOL === currentParam.substr(-2))
+                 currentParam = currentParam.substr(0,currentParam.length-EOL.length);
+
+          }
+
+          param.push(currentParam);
+      }
+
       this.reply(controlSocket,this.REPLY.POSITIVE_COMMAND_NOT_IMPLEMENTED); // Positive command not implemented is more relaxed
 };
 
@@ -61,7 +80,7 @@ FTPServer.prototype.ontimeout = function (controlSocket)
   
     this.showStatistics(controlSocket);
     
-    controlSocket.destroy();
+    controlSocket.destroy(); // Don't allow any further I/O (in case client sends more data its discarded)
     
 };
 
@@ -74,7 +93,8 @@ FTPServer.prototype.onconnection = function (controlSocket)
 {
    
     console.log(Date.now(),'Remote established control connection from ',controlSocket.remoteAddress+':'+controlSocket.remotePort);
-    console.log('Idle timeout is ',IDLE_TIMEOUT_DELAY+' ms.');
+    if (this.configuration.idletimeout)
+        console.log('Idle timeout is ',this.configuration.idletimeout+' ms.');
     
     controlSocket.on('data',this.ondata.bind(this,controlSocket));
                         
@@ -84,7 +104,8 @@ FTPServer.prototype.onconnection = function (controlSocket)
     
     this.reply(controlSocket,this.REPLY.SERVICE_READY,'Welcome to '+this.configuration.name);
     
-    controlSocket.setTimeout(IDLE_TIMEOUT_DELAY,this.ontimeout.bind(this,controlSocket));
+    if (this.configuration.idletimeout)
+      controlSocket.setTimeout(this.configuration.idletimeout,this.ontimeout.bind(this,controlSocket));
 
 };
 
@@ -204,4 +225,5 @@ FTPServer.prototype.REPLY =
 
 var ftpServer = new FTPServer({name : HOST_NAME,
                             port : COMMAND_PORT_L,
-                            host : LOOPBACK_IP});
+                            host : LOOPBACK_IP,
+                            idletimeout : 0});
