@@ -14,6 +14,7 @@ var SP = ' ';
 function FTPServer (configuration)
 {
     this.server = net.createServer(this.onconnection.bind(this));
+    this.commandStr = '';
     
     this.configuration = configuration;
     
@@ -33,14 +34,29 @@ FTPServer.prototype.ondata = function (controlSocket,data)
 {
       var cmd, 
           dataStr = data.toString(),
-          dataSplit = dataStr.split(SP),
+          commandSplit,
           paramNr,
           param = [],
-          currentParam;
+          currentParam,
+          indexEOL,
+          currentCommand;
     
-      console.log('data',data,dataStr,dataSplit);
 
-      cmd = dataSplit[0];
+      indexEOL = dataStr.indexOf(EOL);
+
+      if (indexEOL === -1) // Not received EOL just append received data to command string
+      {
+          this.commandStr += dataStr;
+          return; /* "It should be noted that the server is to take no action until the end of line code is received." RFC 959 p. 46 */
+      }
+
+      this.commandStr += dataStr.substring(0,indexEOL);
+
+      commandSplit = this.commandStr.split(SP);
+
+    console.log("commandstr",this.commandStr);
+
+      /*cmd = dataSplit[0];
 
       for (paramNr=1;paramNr<dataSplit.length;paramNr++)
       {
@@ -54,7 +70,7 @@ FTPServer.prototype.ondata = function (controlSocket,data)
           }
 
           param.push(currentParam);
-      }
+      }*/
 
       this.reply(controlSocket,this.REPLY.POSITIVE_COMMAND_NOT_IMPLEMENTED); // Positive command not implemented is more relaxed
 };
@@ -222,6 +238,81 @@ FTPServer.prototype.REPLY =
     '553' : 'Requested action not taken. File name not allowed'
     
 };
+
+// RFC 959 - section 5.3.1 - p. 47
+/*
+        USER <SP> <username> <CRLF>
+        PASS <SP> <password> <CRLF>
+        ACCT <SP> <account-information> <CRLF>
+        CWD  <SP> <pathname> <CRLF>
+        CDUP <CRLF>
+        SMNT <SP> <pathname> <CRLF>
+        QUIT <CRLF>
+        REIN <CRLF>
+        PORT <SP> <host-port> <CRLF>
+        PASV <CRLF>
+        TYPE <SP> <type-code> <CRLF>
+        STRU <SP> <structure-code> <CRLF>
+        MODE <SP> <mode-code> <CRLF>
+        RETR <SP> <pathname> <CRLF>
+        STOR <SP> <pathname> <CRLF>
+        STOU <CRLF>
+        APPE <SP> <pathname> <CRLF>
+        ALLO <SP> <decimal-integer>
+            [<SP> R <SP> <decimal-integer>] <CRLF>
+        REST <SP> <marker> <CRLF>
+        RNFR <SP> <pathname> <CRLF>
+        RNTO <SP> <pathname> <CRLF>
+        ABOR <CRLF>
+        DELE <SP> <pathname> <CRLF>
+        RMD  <SP> <pathname> <CRLF>
+        MKD  <SP> <pathname> <CRLF>
+        PWD  <CRLF>
+        LIST [<SP> <pathname>] <CRLF>
+        NLST [<SP> <pathname>] <CRLF>
+        SITE <SP> <string> <CRLF>
+        SYST <CRLF>
+        STAT [<SP> <pathname>] <CRLF>
+        HELP [<SP> <string>] <CRLF>
+        NOOP <CRLF>
+*/
+
+FTPServer.prototype.COMMANDS = [
+    'USER',
+    'PASS',
+    'ACCT',
+    'CWD',
+    'CDUP',
+    'SMNT',
+    'QUIT',
+    'REIN',
+    'PORT',
+    'PASV',
+    'TYPE',
+    'STRU',
+    'MODE',
+    'RETR',
+    'STOR',
+    'STOU',
+    'APPE',
+    'ALLO',
+    'REST',
+    'RNFR',
+    'RNTO',
+    'ABOR',
+    'DELE',
+    'RMD',
+    'MKD',
+    'PWD',
+    'LIST',
+    'NLST',
+    'SITE',
+    'SYST',
+    'STAT',
+    'HELP',
+    'NOOP'
+];
+
 
 var ftpServer = new FTPServer({name : HOST_NAME,
                             port : COMMAND_PORT_L,
