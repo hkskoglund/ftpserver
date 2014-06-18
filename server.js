@@ -1,4 +1,4 @@
-/* global require: true */
+/* global console:true, require: true */
 
 'use strict';
 
@@ -30,49 +30,58 @@ function FTPServer (configuration)
     this.server.listen(this.configuration.port,this.configuration.host, this.onlistening.bind(this));
 }
 
+FTPServer.prototype.cmdFilter = function (element)
+{
+    return (element.indexOf(this) === 0);
+};
+
+FTPServer.prototype.findMatchingCommand = function(command)
+{
+
+    if (!command)
+    {
+        console.error('Undefined or null command, cannot find matching command');
+        return ;
+    } else
+        return FTPServer.prototype.COMMANDS.filter(this.cmdFilter,command.toUpperCase());
+
+};
+
 FTPServer.prototype.ondata = function (controlSocket,data)
 {
       var cmd, 
           dataStr = data.toString(),
           commandSplit,
-          paramNr,
-          param = [],
-          currentParam,
           indexEOL,
-          currentCommand;
-    
+          matchingCommands;
 
-      indexEOL = dataStr.indexOf(EOL);
+     indexEOL = dataStr.indexOf(EOL);
 
       if (indexEOL === -1) // Not received EOL just append received data to command string
       {
           this.commandStr += dataStr;
-          return; /* "It should be noted that the server is to take no action until the end of line code is received." RFC 959 p. 46 */
+          return; /* "It should be noted that the server is to take no action until the end of line code is received." http://www.ietf.org/rfc/rfc959.txt p. 46 */
       }
 
       this.commandStr += dataStr.substring(0,indexEOL);
 
       commandSplit = this.commandStr.split(SP);
 
-    console.log("commandstr",this.commandStr);
+    console.log("commandstr",this.commandStr,commandSplit);
 
-      /*cmd = dataSplit[0];
+    matchingCommands = this.findMatchingCommand(commandSplit[0]);
+    console.log('matcing commands',matchingCommands);
 
-      for (paramNr=1;paramNr<dataSplit.length;paramNr++)
-      {
-          currentParam = dataSplit[paramNr];
-          if (paramNr == dataSplit.length-1)
-          {
-              // Strip of EOL on last parameter
-              if (EOL === currentParam.substr(-2))
-                 currentParam = currentParam.substr(0,currentParam.length-EOL.length);
-
-          }
-
-          param.push(currentParam);
-      }*/
+     if (!matchingCommands || matchingCommands.length === 0 )
+         this.reply(controlSocket,this.REPLY.SYNTAX_ERROR_COMMAND_UNRECOGNIZED);
+    else if (matchingCommands.length > 1)
+        this.reply(controlSocket,this.REPLY.SYNTAX_ERROR_COMMAND_UNRECOGNIZED,'Ambigous commands '+matchingCommands);
+    else
 
       this.reply(controlSocket,this.REPLY.POSITIVE_COMMAND_NOT_IMPLEMENTED); // Positive command not implemented is more relaxed
+
+    this.commandStr = dataStr.substring(indexEOL+2); // Next command line or "" empty string
+
 };
 
 FTPServer.prototype.onend = function (controlSocket,data)
@@ -125,6 +134,7 @@ FTPServer.prototype.onconnection = function (controlSocket)
 
 };
 
+// Adds watch on buffer size
 FTPServer.prototype.write = function (controlSocket,message)
 {
     //http://nodejs.org/api/net.html#net_socket_buffersize
@@ -156,11 +166,11 @@ FTPServer.prototype.onlistening = function ()
   console.log('Listening',this.server.address());
 };
 
-// Based on section 4.2.2 Numeric Order List of Reply Codes, RFC 959 p. 41-43
+// Based on section 4.2.2 Numeric Order List of Reply Codes, http://www.ietf.org/rfc/rfc959.txt p. 41-43
 
 FTPServer.prototype.REPLY = 
  {
-    // Second digit : from RFC 959, p. 38 
+    // Second digit : from http://www.ietf.org/rfc/rfc959.txt, p. 38
     
 //    x0z   Syntax - These replies refer to syntax errors,
 //                  syntactically correct commands that don't fit any
@@ -184,7 +194,7 @@ FTPServer.prototype.REPLY =
 
     // Positive Preliminary reply
     
-    '110' : 'Restart marker reply',
+    '110' : 'Restart marker reply.',
     '120' : 'Service ready in nnn minutes',
     '125' : 'Data connection already open; transfer starting.',
     '150' : 'File status okay; about to open data connection.',
@@ -194,20 +204,20 @@ FTPServer.prototype.REPLY =
     
     POSITIVE_COMMAND_NOT_IMPLEMENTED : '202',
     '202' : 'Command not implemented, superfluous at this site.',
-    '211' : 'System status, or system help reply',
-    '212' : 'Directory status',
-    '213' : 'File status',
+    '211' : 'System status, or system help reply.',
+    '212' : 'Directory status.',
+    '213' : 'File status.',
     '214' : 'Help message.',
     '215' : 'NAME system type.',
     SERVICE_READY : '220',
     '220' : 'Service ready for new user.',
     '221' : 'Service closing control connection.',
     '225' : 'Data connection open; no transfer in progress.',
-    '226' : 'Closing data connection',
+    '226' : 'Closing data connection.',
     '227' : 'Entering passive mode (h1,h2,h3,h4,p1,p2).',
     '230' : 'User logged in, proceed.',
-    '250' : 'Requested file action okay, completed',
-    '257' : 'PATHNAME created',
+    '250' : 'Requested file action okay, completed.',
+    '257' : 'PATHNAME created.',
     
     // Positive Intermediate reply
     '331' : 'Username okay, need password.',
@@ -219,27 +229,28 @@ FTPServer.prototype.REPLY =
     '421' : 'Service not available, closing control connection.',
     '425' : 'Cannot open data connection.',
     '426' : 'Connection closed; transfer aborted.',
-    '450' : 'Requested file action not taken',
+    '450' : 'Requested file action not taken.',
     '451' : 'Requested action aborted; local error in processing.',
     '452' : 'Requested action not taken. Insufficient storage space in system.',
     
     // Permanent Negative Completion reply
-    '500' : 'Syntax error, command unrecognized',
+    SYNTAX_ERROR_COMMAND_UNRECOGNIZED : '500',
+    '500' : 'Syntax error, command unrecognized.',
     '501' : 'Syntax error in parameters or arguments.',
     NEGATIVE_COMMAND_NOT_IMPLEMENTED : '502',
     '502' : 'Command not implemented.',
-    '503' : 'Bad sequence of commands',
-    '504' : 'Command not implemented for that parameter',
-    '530' : 'Not logged in',
-    '532' : 'Need account for storing files',
-    '550' : 'Requested action not taken. File unavailable (e.g., file not found, no access',
+    '503' : 'Bad sequence of commands.',
+    '504' : 'Command not implemented for that parameter.',
+    '530' : 'Not logged in.',
+    '532' : 'Need account for storing files.',
+    '550' : 'Requested action not taken. File unavailable (e.g., file not found, no access).',
     '551' : 'Requested action aborted: page type unknown.',
-    '552' : 'Requested file action aborted: Exceeded storage allocation (for current directory or dataset)',
-    '553' : 'Requested action not taken. File name not allowed'
+    '552' : 'Requested file action aborted: Exceeded storage allocation (for current directory or dataset).',
+    '553' : 'Requested action not taken. File name not allowed.'
     
 };
 
-// RFC 959 - section 5.3.1 - p. 47
+//  http://www.ietf.org/rfc/rfc959.txt - section 5.3.1 - p. 47
 /*
         USER <SP> <username> <CRLF>
         PASS <SP> <password> <CRLF>
