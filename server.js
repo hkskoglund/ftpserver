@@ -164,19 +164,19 @@ FTPServer.prototype.write = function (controlSocket,message)
 };
 
 // Convenience function that adds SP and EOL (end-of-line)
-FTPServer.prototype.reply = function (controlSocket,code,message)
+FTPServer.prototype.reply = function (controlSocket,reply,additionalDescription)
 {
  
-    if (code === undefined)
+    if (reply === undefined)
     {
         console.trace();
-         console.error(Date.now(),'Reply code is not valid/undefined, cannot write message to controlSocket',message);
+         console.error(Date.now(),'Reply is not valid/undefined, cannot write message to controlSocket');
     }
 
-   if (message)
-      this.write(controlSocket,code+SP+this.REPLY[code]+SP+message+EOL);
+   if (additionalDescription)
+      this.write(controlSocket,reply.code+SP+reply.description+SP+additionalDescription+EOL);
     else
-      this.write(controlSocket,code+SP+this.REPLY[code]+EOL);
+      this.write(controlSocket,reply.code+SP+reply.description+EOL);
 };
 
 FTPServer.prototype.onlistening = function ()
@@ -214,59 +214,69 @@ FTPServer.prototype.REPLY =
 
     // Positive Preliminary reply
     
-    '110' : 'Restart marker reply.',
-    '120' : 'Service ready in nnn minutes',
-    '125' : 'Data connection already open; transfer starting.',
-    '150' : 'File status okay; about to open data connection.',
+    //'110' : 'Restart marker reply.',
+    //'120' : 'Service ready in nnn minutes',
+    //'125' : 'Data connection already open; transfer starting.',
+    //'150' : 'File status okay; about to open data connection.',
     
     // Positive Completion reply
-    '200' : 'Command okay.',
+    //'200' : 'Command okay.',
     
-    POSITIVE_COMMAND_NOT_IMPLEMENTED : '202',
-    '202' : 'Command not implemented, superfluous at this site.',
-    '211' : 'System status, or system help reply.',
-    '212' : 'Directory status.',
-    '213' : 'File status.',
-    '214' : 'Help message.',
-    '215' : 'NAME system type.',
-    SERVICE_READY : '220',
-    '220' : 'Service ready for new user.',
-    '221' : 'Service closing control connection.',
-    '225' : 'Data connection open; no transfer in progress.',
-    '226' : 'Closing data connection.',
-    '227' : 'Entering passive mode (h1,h2,h3,h4,p1,p2).',
-    '230' : 'User logged in, proceed.',
-    '250' : 'Requested file action okay, completed.',
-    '257' : 'PATHNAME created.',
+    POSITIVE_COMMAND_NOT_IMPLEMENTED : {
+        code : '202',
+        description : 'Command not implemented, superfluous at this site.'
+    },
+    //'211' : 'System status, or system help reply.',
+    //'212' : 'Directory status.',
+    //'213' : 'File status.',
+    //'214' : 'Help message.',
+    //'215' : 'NAME system type.',
+    SERVICE_READY : {
+        code : '220',
+        description : 'Service ready for new user.'
+   },
+   // '221' : 'Service closing control connection.',
+   // '225' : 'Data connection open; no transfer in progress.',
+   // '226' : 'Closing data connection.',
+   //'227' : 'Entering passive mode (h1,h2,h3,h4,p1,p2).',
+  //'230' : 'User logged in, proceed.',
+  //  '250' : 'Requested file action okay, completed.',
+ //    '257' : 'PATHNAME created.',
     
     // Positive Intermediate reply
-    '331' : 'Username okay, need password.',
-    '332' : 'Need account for login.',
-    '350' : 'Requested file action pending further information.',
+   // '331' : 'Username okay, need password.',
+//    '332' : 'Need account for login.',
+  //  '350' : 'Requested file action pending further information.',
     
     // Transient Negative Completion reply
-    SERVICE_NOT_AVAILABLE : '421',
-    '421' : 'Service not available, closing control connection.',
-    '425' : 'Cannot open data connection.',
-    '426' : 'Connection closed; transfer aborted.',
-    '450' : 'Requested file action not taken.',
-    '451' : 'Requested action aborted; local error in processing.',
-    '452' : 'Requested action not taken. Insufficient storage space in system.',
+    SERVICE_NOT_AVAILABLE : {
+        code : '421',
+        description : 'Service not available, closing control connection.'
+    },
+    //'425' : 'Cannot open data connection.',
+    //'426' : 'Connection closed; transfer aborted.',
+    //'450' : 'Requested file action not taken.',
+    //'451' : 'Requested action aborted; local error in processing.',
+    //'452' : 'Requested action not taken. Insufficient storage space in system.',
     
     // Permanent Negative Completion reply
-    SYNTAX_ERROR_COMMAND_UNRECOGNIZED : '500',
-    '500' : 'Syntax error, command unrecognized.',
-    '501' : 'Syntax error in parameters or arguments.',
-    NEGATIVE_COMMAND_NOT_IMPLEMENTED : '502',
-    '502' : 'Command not implemented.',
-    '503' : 'Bad sequence of commands.',
-    '504' : 'Command not implemented for that parameter.',
-    '530' : 'Not logged in.',
-    '532' : 'Need account for storing files.',
-    '550' : 'Requested action not taken. File unavailable (e.g., file not found, no access).',
-    '551' : 'Requested action aborted: page type unknown.',
-    '552' : 'Requested file action aborted: Exceeded storage allocation (for current directory or dataset).',
-    '553' : 'Requested action not taken. File name not allowed.'
+    SYNTAX_ERROR_COMMAND_UNRECOGNIZED : {
+        code : '500',
+        description : 'Syntax error, command unrecognized.'
+    },
+    //'501' : 'Syntax error in parameters or arguments.',
+    NEGATIVE_COMMAND_NOT_IMPLEMENTED : {
+        code : '502',
+        description : 'Command not implemented.'
+    }
+    //'503' : 'Bad sequence of commands.',
+    //'504' : 'Command not implemented for that parameter.',
+    //'530' : 'Not logged in.',
+    //'532' : 'Need account for storing files.',
+    //'550' : 'Requested action not taken. File unavailable (e.g., file not found, no access).',
+    //'551' : 'Requested action aborted: page type unknown.',
+    //'552' : 'Requested file action aborted: Exceeded storage allocation (for current directory or dataset).',
+    //'553' : 'Requested action not taken. File name not allowed.'
     
 };
 
