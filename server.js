@@ -14,7 +14,11 @@ var SP = ' ';
 function FTPServer (configuration)
 {
     this.server = net.createServer(this.onconnection.bind(this));
-    this.commandStr = '';
+    this.command = {
+       line : '',
+       command : undefined,
+       arguments : undefined
+    };
     
     this.configuration = configuration;
     
@@ -43,8 +47,22 @@ FTPServer.prototype.findMatchingCommand = function(command)
         console.error('Undefined or null command, cannot find matching command');
         return ;
     } else
-        return FTPServer.prototype.COMMANDS.filter(this.cmdFilter,command.toUpperCase());
+        return Object.getOwnPropertyNames(FTPServer.prototype.COMMAND).filter(this.cmdFilter,command.toUpperCase());
 
+};
+
+// Protocol Intepreter
+FTPServer.prototype.serverPI = function () {
+
+    switch (this.command.command)
+    {
+       case FTPServer.prototype.COMMAND.USER :
+            console.log("Got USER command",this.command);
+            break;
+
+       default :
+            break;
+    }
 };
 
 FTPServer.prototype.ondata = function (controlSocket,data)
@@ -59,15 +77,15 @@ FTPServer.prototype.ondata = function (controlSocket,data)
 
       if (indexEOL === -1) // Not received EOL just append received data to command string
       {
-          this.commandStr += dataStr;
+          this.command.line += dataStr;
           return; /* "It should be noted that the server is to take no action until the end of line code is received." http://www.ietf.org/rfc/rfc959.txt p. 46 */
       }
 
-      this.commandStr += dataStr.substring(0,indexEOL);
+      this.command.line += dataStr.substring(0,indexEOL);
 
-      commandSplit = this.commandStr.split(SP);
+      commandSplit = this.command.line.split(SP);
 
-    console.log("commandstr",this.commandStr,commandSplit);
+    console.log("command.line",this.command.line,commandSplit);
 
     matchingCommands = this.findMatchingCommand(commandSplit[0]);
     console.log('matcing commands',matchingCommands);
@@ -76,11 +94,13 @@ FTPServer.prototype.ondata = function (controlSocket,data)
          this.reply(controlSocket,this.REPLY.SYNTAX_ERROR_COMMAND_UNRECOGNIZED);
     else if (matchingCommands.length > 1)
         this.reply(controlSocket,this.REPLY.SYNTAX_ERROR_COMMAND_UNRECOGNIZED,'Ambigous commands '+matchingCommands);
-    else
+    else {
+        this.command.command = matchingCommands[0];
+        this.command.arguments = commandSplit.slice(1);
+        this.serverPI();
+    }
 
-      this.reply(controlSocket,this.REPLY.POSITIVE_COMMAND_NOT_IMPLEMENTED); // Positive command not implemented is more relaxed
-
-    this.commandStr = dataStr.substring(indexEOL+2); // Next command line or "" empty string
+    this.command.line = dataStr.substring(indexEOL+2); // Next command line or "" empty string
 
 };
 
@@ -288,41 +308,41 @@ FTPServer.prototype.REPLY =
         NOOP <CRLF>
 */
 
-FTPServer.prototype.COMMANDS = [
-    'USER',
-    'PASS',
-    'ACCT',
-    'CWD',
-    'CDUP',
-    'SMNT',
-    'QUIT',
-    'REIN',
-    'PORT',
-    'PASV',
-    'TYPE',
-    'STRU',
-    'MODE',
-    'RETR',
-    'STOR',
-    'STOU',
-    'APPE',
-    'ALLO',
-    'REST',
-    'RNFR',
-    'RNTO',
-    'ABOR',
-    'DELE',
-    'RMD',
-    'MKD',
-    'PWD',
-    'LIST',
-    'NLST',
-    'SITE',
-    'SYST',
-    'STAT',
-    'HELP',
-    'NOOP'
-];
+FTPServer.prototype.COMMAND = {
+    USER : 'USER',
+    PASS : 'PASS',
+    ACCT : 'ACCT',
+    CWD : 'CWD',
+    CDUP : 'CDUP',
+    SMNT : 'SMNT',
+    QUIT : 'QUIT',
+    REIN : 'REIN',
+    PORT : 'PORT',
+    PASV : 'PASV',
+    TYPE : 'TYPE',
+    STRU : 'STRU',
+    MODE : 'MODE',
+    RETR : 'RETR',
+    STOR :'STOR',
+    STOU : 'STOU',
+    APPE : 'APPE',
+    ALLO : 'ALLO',
+    REST : 'REST',
+    RNFR : 'RNFR',
+    RNTO : 'RNTO',
+    ABOR : 'ABOR',
+    DELE : 'DELE',
+    RMD : 'RMD',
+    MKD : 'MKD',
+    PWD : 'PWD',
+    LIST : 'LIST',
+    NLST : 'NLST',
+    SITE : 'SITE',
+    SYST : 'SYST',
+    STAT : 'STAT',
+    HELP : 'HELP',
+    NOOP : 'NOOP'
+};
 
 
 var ftpServer = new FTPServer({name : HOST_NAME,
