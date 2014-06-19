@@ -1,4 +1,4 @@
-/* global console:true, require: true */
+/* global console:true, require: true, setTimeout: true*/
 
 'use strict';
 
@@ -14,11 +14,14 @@ var SP = ' ';
 function FTPServer (configuration)
 {
     this.server = net.createServer(this.onconnection.bind(this));
-    this.command = {
-       line : '',
-       command : undefined,
-       arguments : undefined
-    };
+
+    this.serviceUnavailable = false;
+
+    this.command = {}; // State of command line for control socket
+
+    this.controlSockets = []; // Established control sockets
+
+    this.pendingServiceReadyQueue = []; // Queue of control sockets pending for service ready message
     
     this.configuration = configuration;
     
@@ -31,6 +34,10 @@ function FTPServer (configuration)
         console.info('Created default configuration',this.configuration);
     }
     
+    console.log("Max conncetions",this.server.maxConnections);
+
+    this.server.maxConnections = this.configuration.maxConnections || 1;
+
     this.server.listen(this.configuration.port,this.configuration.host, this.onlistening.bind(this));
 }
 
@@ -52,7 +59,7 @@ FTPServer.prototype.findMatchingCommand = function(command)
 };
 
 // Protocol Intepreter
-FTPServer.prototype.serverPI = function () {
+FTPServer.prototype.serverPI = function (controlSocket) {
 
     switch (this.command.command)
     {
@@ -63,12 +70,14 @@ FTPServer.prototype.serverPI = function () {
        default :
             break;
     }
+
+    this.reply(controlSocket,this.REPLY.POSITIVE_COMMAND_NOT_IMPLEMENTED);
+
 };
 
-FTPServer.prototype.ondata = function (controlSocket,data)
+FTPServer.prototype.processCommandLine = function (controlSocket,dataStr)
 {
-      var cmd, 
-          dataStr = data.toString(),
+     var
           commandSplit,
           indexEOL,
           matchingCommands;
@@ -97,20 +106,61 @@ FTPServer.prototype.ondata = function (controlSocket,data)
     else {
         this.command.command = matchingCommands[0];
         this.command.arguments = commandSplit.slice(1);
-        this.serverPI();
+        this.serverPI(controlSocket);
     }
 
     this.command.line = dataStr.substring(indexEOL+2); // Next command line or "" empty string
 
+   /* if (this.command.line !== '')
+        this.processCommandLine(controlSocket,*/
+};
+
+FTPServer.prototype.ondata = function (controlSocket,data)
+{
+     this.processCommandLine(controlSocket,data.toString());
+
+};
+
+FTPServer.prototype.removeSocketFromQueue = function (queue,socket)
+{
+    var indx = queue.indexOf(socket);
+    if (indx !== -1)
+        queue.splice(indx,1);
+    //else
+    //    console.warn('Cannot remove socket from queue',queue,socket);
+};
+
+FTPServer.prototype.removeSocketFromDefaultQueues = function(socket)
+{
+    this.removeSocketFromQueue(this.controlSockets,socket);
+    this.removeSocketFromQueue(this.pendingServiceReadyQueue,socket);
+};
+
+FTPServer.prototype.onclose = function (socket,had_error)
+{
+   if (had_error)
+       console.error(Date.now(),'Socket had transmission error(s) and is fully closed now',this.getSocketRemoteAddress(socket));
 };
 
 FTPServer.prototype.onend = function (controlSocket,data)
 {
-       console.log('Remote disconnected control connection');
-       this.showStatistics(controlSocket);
+
+    console.log('Remote '+this.getSocketRemoteAddress(controlSocket)+' disconnected control connection');
+
+    this.removeControlSocket(controlSocket);
 };
 
-FTPServer.prototype.showStatistics = function (controlSocket)
+FTPServer.prototype.removeControlSocket = function (socket)
+{
+
+    this.showSocketStatistics(socket);
+
+    this.removeCommandLine(socket);
+
+    this.removeSocketFromDefaultQueues(socket);
+};
+
+FTPServer.prototype.showSocketStatistics = function (controlSocket)
 {
     console.info('Bytes written: '+controlSocket.bytesWritten+ ' read: '+controlSocket.bytesRead);
 };
@@ -123,31 +173,95 @@ FTPServer.prototype.ontimeout = function (controlSocket)
     // Server: Send FIN --> connection FIN_WAIT_1 (received ACK for FIN, half-closed) -> FIN_WAIT_2 (waiting for FIN from remote, fully closed) -> TIME_WAIT (waiting for possible packets beloging to connection to get removed from the network (2*Max Segment Lifetime) before allowing new connection on the socket pair again)
     // User : CLOSE_WAIT (server has closed connection)
   
-    this.showStatistics(controlSocket);
+   this.removeControlSocket(controlSocket);
     
     controlSocket.destroy(); // Don't allow any further I/O (in case client sends more data its discarded)
     
 };
 
-FTPServer.prototype.onerror = function (error)
+FTPServer.prototype.onerror = function (socket,error)
 {
     console.error(Date.now(),'Error on control connection',error);
 };
 
+FTPServer.prototype.onNumberOfConnections = function (error,count)
+{
+    if (!error)
+        console.info('Established connections '+count);
+    else
+        console.error('error',error);
+};
+
+FTPServer.prototype.getSocketRemoteAddress = function (socket)
+{
+    if (socket.address() === null && socket._peername) // Hack, probing private _ node socket data struct. Could not get remote address after 'end','close' event on socket
+        return socket._peername.address+':'+socket._peername.port;
+    else
+        return socket.remoteAddress+':'+socket.remotePort;
+};
+
+FTPServer.prototype.removeCommandLine = function(socket)
+{
+    this.command[this.getSocketRemoteAddress(socket)] = null; // Leave null trace
+};
+
+FTPServer.prototype.newCommandLine = function (socket)
+{
+    this.command[this.getSocketRemoteAddress(socket)] = {
+        line : '',
+       command : undefined,
+       arguments : undefined
+    };
+};
+
+FTPServer.prototype.replyWelcome = function (socket)
+{
+        this.reply(socket,this.REPLY.SERVICE_READY,'Welcome to '+this.configuration.name);
+
+};
+
+FTPServer.prototype.attachDefaultEventListeners = function (socket)
+{
+      socket.on('data',this.ondata.bind(this,socket));
+
+      socket.on('end', this.onend.bind(this,socket));
+
+      socket.on('error',this.onerror.bind(this,socket));
+
+      socket.on('close',this.onclose.bind(this,socket));
+};
+
 FTPServer.prototype.onconnection = function (controlSocket)
 {
-   
-    console.log(Date.now(),'Remote established control connection from ',controlSocket.remoteAddress+':'+controlSocket.remotePort);
+    var remoteAddr = this.getSocketRemoteAddress(controlSocket);
+
+    this.server.getConnections(this.onNumberOfConnections.bind(this));
+
+    console.log(Date.now(),'Remote '+remoteAddr+' connected to server');
+
+    this.controlSockets.push(controlSocket);
+
     if (this.configuration.idletimeout)
-        console.log('Idle timeout is ',this.configuration.idletimeout+' ms.');
+        console.log('Idle timeout for connection is ',this.configuration.idletimeout+' ms.');
     
-    controlSocket.on('data',this.ondata.bind(this,controlSocket));
-                        
-    controlSocket.on('end', this.onend.bind(this,controlSocket));
+    this.newCommandLine(controlSocket);
     
-    controlSocket.on('error',this.onerror.bind(this,controlSocket));
-    
-    this.reply(controlSocket,this.REPLY.SERVICE_READY,'Welcome to '+this.configuration.name);
+    // RFC p. 50 Connection establishment
+    if (this.isServiceEnabled())
+    {
+
+        this.attachDefaultEventListeners(controlSocket);
+
+        this.replyWelcome(controlSocket);
+
+    } else {
+        this.reply(controlSocket,this.REPLY.PRELIMINARY_SERVICE_DELAY);
+        this.attachDefaultEventListeners(controlSocket);
+
+        controlSocket.pause(); // Don't process data events
+        this.pendingServiceReadyQueue.push(controlSocket);
+
+    }
     
     if (this.configuration.idletimeout)
       controlSocket.setTimeout(this.configuration.idletimeout,this.ontimeout.bind(this,controlSocket));
@@ -186,7 +300,48 @@ FTPServer.prototype.onlistening = function ()
   console.log('Listening',this.server.address());
 };
 
+FTPServer.prototype.disableService = function ()
+{
+    this.serviceUnavailable = true;
+
+    // TO DO : If any data transfers are active, finish it before sending service unavailable
+    this.controlSockets.forEach(function (socket)
+                                {
+                                   this.reply(socket,this.REPLY.SERVICE_NOT_AVAILABLE);
+                                },this);
+
+};
+
+// Reply for queued sockets when service is ready
+FTPServer.prototype.onReplyWelcome = function (socket)
+{
+
+    socket.resume();
+    this.replyWelcome(socket);
+};
+
+FTPServer.prototype.enableService = function ()
+{
+    this.serviceUnavailable = false;
+
+    if (this.pendingServiceReadyQueue.length > 0) {
+         console.log('Pending queue: Sending welcome to sockets, queue length',this.pendingServiceReadyQueue.length);
+        this.pendingServiceReadyQueue.forEach(this.onReplyWelcome,this);
+    }
+
+    this.pendingServiceReadyQueue = [];
+
+};
+
+FTPServer.prototype.isServiceEnabled = function ()
+{
+    return !this.serviceUnavailable;
+
+};
+
 // Based on section 4.2.2 Numeric Order List of Reply Codes, http://www.ietf.org/rfc/rfc959.txt p. 41-43
+
+// http://www.ietf.org/rfc/rfc959.txt p. 49 "a server may substitute text in the replies"
 
 FTPServer.prototype.REPLY = 
  {
@@ -215,6 +370,10 @@ FTPServer.prototype.REPLY =
     // Positive Preliminary reply
     
     //'110' : 'Restart marker reply.',
+    PRELIMINARY_SERVICE_DELAY : {
+        code : '120',
+        description : 'Service not available right now. Try again later.'
+    },
     //'120' : 'Service ready in nnn minutes',
     //'125' : 'Data connection already open; transfer starting.',
     //'150' : 'File status okay; about to open data connection.',
@@ -358,4 +517,15 @@ FTPServer.prototype.COMMAND = {
 var ftpServer = new FTPServer({name : HOST_NAME,
                             port : COMMAND_PORT_L,
                             host : LOOPBACK_IP,
-                            idletimeout : 0});
+                            idletimeout : 0,
+                            maxConnections : 2
+                              });
+
+ftpServer.disableService();
+console.log("Enabling service in 30 s");
+setTimeout(function ()
+           {
+               console.info("Enabling service NOW");
+               this.enableService();
+
+           }.bind(ftpServer),30000);
