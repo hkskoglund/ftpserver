@@ -38,7 +38,7 @@ function FTPServer (configuration)
 
     this.server.maxConnections = this.configuration.maxConnections || 1;
 
-    this.server.listen(this.configuration.port,this.configuration.host, this.onlistening.bind(this));
+    //this.server.listen(this.configuration.port,this.configuration.host, this.onlistening.bind(this));
 }
 
 FTPServer.prototype.cmdFilter = function (element)
@@ -520,6 +520,8 @@ var ftpServer = new FTPServer({name : HOST_NAME,
                             idletimeout : 0,
                             maxConnections : 2
                               });
+
+ftpServer.server.listen(ftpServer.configuration.port,ftpServer.configuration.host, ftpServer.onlistening.bind(ftpServer));
 
 ftpServer.disableService();
 console.log("Enabling service in 30 s");
