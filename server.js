@@ -10,6 +10,8 @@ var HOST_NAME = 'FAKE FTP_SERVER';
 
 var CRLF = '\r\n', EOL = CRLF;
 var SP = ' ';
+var USER_PREFIX = 'U:';
+var SERVER_PREFIX = 'S:';
 
 function FTPServer (configuration)
 {
@@ -154,6 +156,8 @@ FTPServer.prototype.onControlData = function (controlSocket,data)
         strData = data.toString();
         console.warn('Conversion from',data,'to '+strData,'length',strData.length);
     }
+
+    console.log(USER_PREFIX,strData);
 
      this.processCommandLine(controlSocket,strData);
 
@@ -319,6 +323,7 @@ FTPServer.prototype.write = function (controlSocket,message)
     //http://nodejs.org/api/net.html#net_socket_buffersize
     if (controlSocket.bufferSize)
         console.log('Internal node character buffer size',controlSocket.bufferSize);
+    console.log(SERVER_PREFIX,message);
     controlSocket.write(message);
 };
 
@@ -603,6 +608,6 @@ Test.prototype.closeServer = function (delay)
 
 var test = new Test(ftpServer);
 
-//test.disableThenEnableService(10000);
-//test.closeServer(20000);
+test.disableThenEnableService(30000);
+test.closeServer(40000);
 
