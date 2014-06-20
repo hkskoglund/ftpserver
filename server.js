@@ -33,35 +33,36 @@ function FTPServer (configuration)
         this.configuration.idletimeout = 0;
         console.info('Created default configuration',this.configuration);
     }
-    
-    console.log("Max conncetions",this.server.maxConnections);
 
     this.server.maxConnections = this.configuration.maxConnections || 1;
-
-    //this.server.listen(this.configuration.port,this.configuration.host, this.onlistening.bind(this));
+    console.log("Max connections",this.server.maxConnections);
 }
 
-FTPServer.prototype.cmdFilter = function (element)
-{
-    return (element.indexOf(this) === 0);
-};
-
+// Get all matching commands, by comparing with all FTP commands
 FTPServer.prototype.findMatchingCommand = function(command)
 {
+
+    var cmdFilter = function (cmd)
+    {
+        return (cmd.indexOf(this) === 0);
+    };
 
     if (!command)
     {
         console.error('Undefined or null command, cannot find matching command');
         return ;
     } else
-        return Object.getOwnPropertyNames(FTPServer.prototype.COMMAND).filter(this.cmdFilter,command.toUpperCase());
+        return Object.getOwnPropertyNames(FTPServer.prototype.COMMAND).filter(cmdFilter,command.toUpperCase());
 
 };
 
-// Protocol Intepreter
-FTPServer.prototype.serverPI = function (controlSocket) {
+// Protocol Intepreter - parses a particular FTP command extracted from the command line
+FTPServer.prototype.serverPI = function (controlSocket)
+{
 
-    switch (this.command.command)
+    var ip = this.getSocketRemoteAddress(controlSocket);
+
+    switch (this.command[ip].command)
     {
        case FTPServer.prototype.COMMAND.USER :
             console.log("Got USER command",this.command);
@@ -80,21 +81,23 @@ FTPServer.prototype.processCommandLine = function (controlSocket,dataStr)
      var
           commandSplit,
           indexEOL,
-          matchingCommands;
+          matchingCommands,
+          ip = this.getSocketRemoteAddress(controlSocket),
+         nextCommandLine;
 
      indexEOL = dataStr.indexOf(EOL);
 
       if (indexEOL === -1) // Not received EOL just append received data to command string
       {
-          this.command.line += dataStr;
+          this.command[ip].line += dataStr;
           return; /* "It should be noted that the server is to take no action until the end of line code is received." http://www.ietf.org/rfc/rfc959.txt p. 46 */
       }
 
-      this.command.line += dataStr.substring(0,indexEOL);
+      this.command[ip].line += dataStr.substring(0,indexEOL);
 
-      commandSplit = this.command.line.split(SP);
+      commandSplit = this.command[ip].line.split(SP).filter(function (element) { return (element !== ''); });
 
-    console.log("command.line",this.command.line,commandSplit);
+    console.log("command.line",ip,this.command[ip].line,commandSplit);
 
     matchingCommands = this.findMatchingCommand(commandSplit[0]);
     console.log('matcing commands',matchingCommands);
@@ -104,20 +107,31 @@ FTPServer.prototype.processCommandLine = function (controlSocket,dataStr)
     else if (matchingCommands.length > 1)
         this.reply(controlSocket,this.REPLY.SYNTAX_ERROR_COMMAND_UNRECOGNIZED,'Ambigous commands '+matchingCommands);
     else {
-        this.command.command = matchingCommands[0];
-        this.command.arguments = commandSplit.slice(1);
+        this.command[ip].command = matchingCommands[0];
+        this.command[ip].arguments = commandSplit.slice(1);
+
         this.serverPI(controlSocket);
     }
 
-    this.command.line = dataStr.substring(indexEOL+2); // Next command line or "" empty string
+    this.newCommandLine(controlSocket);
 
-   /* if (this.command.line !== '')
-        this.processCommandLine(controlSocket,*/
+    nextCommandLine = dataStr.substring(indexEOL+2); // Next command line or "" empty string;
+    if (nextCommandLine.length)
+      this.processCommandLine(controlSocket,nextCommandLine);
 };
 
-FTPServer.prototype.ondata = function (controlSocket,data)
+FTPServer.prototype.onControlData = function (controlSocket,data)
 {
-     this.processCommandLine(controlSocket,data.toString());
+    var strData = data;
+
+    if (typeof data !== 'string')
+    {
+        console.warn('Expected a type of string for data on control connection is now',typeof data,'will attempt to use .toString on it');
+        strData = data.toString();
+        console.warn('Conversion from',data,'to '+strData);
+    }
+
+     this.processCommandLine(controlSocket,strData);
 
 };
 
@@ -142,7 +156,7 @@ FTPServer.prototype.onclose = function (socket,had_error)
        console.error(Date.now(),'Socket had transmission error(s) and is fully closed now',this.getSocketRemoteAddress(socket));
 };
 
-FTPServer.prototype.onend = function (controlSocket,data)
+FTPServer.prototype.onControlEnd = function (controlSocket,data)
 {
 
     console.log('Remote '+this.getSocketRemoteAddress(controlSocket)+' disconnected control connection');
@@ -207,7 +221,9 @@ FTPServer.prototype.removeCommandLine = function(socket)
 
 FTPServer.prototype.newCommandLine = function (socket)
 {
-    this.command[this.getSocketRemoteAddress(socket)] = {
+    var ip = this.getSocketRemoteAddress(socket);
+
+    this.command[ip] = {
         line : '',
        command : undefined,
        arguments : undefined
@@ -222,9 +238,9 @@ FTPServer.prototype.replyWelcome = function (socket)
 
 FTPServer.prototype.attachDefaultEventListeners = function (socket)
 {
-      socket.on('data',this.ondata.bind(this,socket));
+      socket.on('data',this.onControlData.bind(this,socket));
 
-      socket.on('end', this.onend.bind(this,socket));
+      socket.on('end', this.onControlEnd.bind(this,socket));
 
       socket.on('error',this.onerror.bind(this,socket));
 
@@ -234,6 +250,8 @@ FTPServer.prototype.attachDefaultEventListeners = function (socket)
 FTPServer.prototype.onconnection = function (controlSocket)
 {
     var remoteAddr = this.getSocketRemoteAddress(controlSocket);
+
+    controlSocket.setEncoding('utf-8'); // UTF-8 backwards compatible with ASCII, http://nodejs.org/api/stream.html#stream_readable_setencoding_encoding
 
     this.server.getConnections(this.onNumberOfConnections.bind(this));
 
@@ -255,10 +273,13 @@ FTPServer.prototype.onconnection = function (controlSocket)
         this.replyWelcome(controlSocket);
 
     } else {
+
         this.reply(controlSocket,this.REPLY.PRELIMINARY_SERVICE_DELAY);
+
         this.attachDefaultEventListeners(controlSocket);
 
         controlSocket.pause(); // Don't process data events
+
         this.pendingServiceReadyQueue.push(controlSocket);
 
     }
@@ -523,11 +544,11 @@ var ftpServer = new FTPServer({name : HOST_NAME,
 
 ftpServer.server.listen(ftpServer.configuration.port,ftpServer.configuration.host, ftpServer.onlistening.bind(ftpServer));
 
-ftpServer.disableService();
+/*ftpServer.disableService();
 console.log("Enabling service in 30 s");
 setTimeout(function ()
            {
                console.info("Enabling service NOW");
                this.enableService();
 
-           }.bind(ftpServer),30000);
+           }.bind(ftpServer),30000);*/
