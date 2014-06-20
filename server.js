@@ -591,7 +591,7 @@ Test.prototype.disableThenEnableService = function (delay)
 Test.prototype.closeServer = function (delay)
 {
       var ftpServer = this.server;
-    console.log('Closing server in 10s');
+    console.log('Closing server in ',delay);
     setTimeout(function ()
                {
                    console.info('Closing server');
