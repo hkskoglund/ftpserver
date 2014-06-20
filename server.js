@@ -13,7 +13,8 @@ var SP = ' ';
 
 function FTPServer (configuration)
 {
-    this.server = net.createServer(this.onconnection.bind(this));
+    this.server = net.createServer(this.onControlConnection.bind(this));
+    this.server.on('close',this.onclose.bind(this));
 
     this.serviceUnavailable = false;
 
@@ -56,6 +57,29 @@ FTPServer.prototype.findMatchingCommand = function(command)
 
 };
 
+FTPServer.prototype.onclose = function ()
+{
+    console.log(this.configuration.name+' closed/not listening for new control connections.');
+};
+
+FTPServer.prototype.close = function ()
+{
+    var clientSocket;
+
+    this.server.close();
+
+    // End clients
+
+    for (var clientNr=0;clientNr<this.controlSockets.length;clientNr++)
+    {
+        clientSocket = this.controlSockets[clientNr];
+        this.reply(clientSocket,this.REPLY.SERVICE_NOT_AVAILABLE,'Please close connection of your end.');
+        clientSocket.end();
+        clientSocket.destroy();
+    }
+
+};
+
 // Protocol Intepreter - parses a particular FTP command extracted from the command line
 FTPServer.prototype.serverPI = function (controlSocket)
 {
@@ -65,7 +89,7 @@ FTPServer.prototype.serverPI = function (controlSocket)
     switch (this.command[ip].command)
     {
        case FTPServer.prototype.COMMAND.USER :
-            console.log("Got USER command",this.command);
+            console.log("Got USER command",this.command[ip]);
             break;
 
        default :
@@ -128,7 +152,7 @@ FTPServer.prototype.onControlData = function (controlSocket,data)
     {
         console.warn('Expected a type of string for data on control connection is now',typeof data,'will attempt to use .toString on it');
         strData = data.toString();
-        console.warn('Conversion from',data,'to '+strData);
+        console.warn('Conversion from',data,'to '+strData,'length',strData.length);
     }
 
      this.processCommandLine(controlSocket,strData);
@@ -150,7 +174,7 @@ FTPServer.prototype.removeSocketFromDefaultQueues = function(socket)
     this.removeSocketFromQueue(this.pendingServiceReadyQueue,socket);
 };
 
-FTPServer.prototype.onclose = function (socket,had_error)
+FTPServer.prototype.onControlClose = function (socket,had_error)
 {
    if (had_error)
        console.error(Date.now(),'Socket had transmission error(s) and is fully closed now',this.getSocketRemoteAddress(socket));
@@ -193,7 +217,7 @@ FTPServer.prototype.ontimeout = function (controlSocket)
     
 };
 
-FTPServer.prototype.onerror = function (socket,error)
+FTPServer.prototype.onControlError = function (socket,error)
 {
     console.error(Date.now(),'Error on control connection',error);
 };
@@ -236,18 +260,18 @@ FTPServer.prototype.replyWelcome = function (socket)
 
 };
 
-FTPServer.prototype.attachDefaultEventListeners = function (socket)
+FTPServer.prototype.attachDefaultControlEventListeners = function (socket)
 {
       socket.on('data',this.onControlData.bind(this,socket));
 
       socket.on('end', this.onControlEnd.bind(this,socket));
 
-      socket.on('error',this.onerror.bind(this,socket));
+      socket.on('error',this.onControlError.bind(this,socket));
 
-      socket.on('close',this.onclose.bind(this,socket));
+      socket.on('close',this.onControlClose.bind(this,socket));
 };
 
-FTPServer.prototype.onconnection = function (controlSocket)
+FTPServer.prototype.onControlConnection = function (controlSocket)
 {
     var remoteAddr = this.getSocketRemoteAddress(controlSocket);
 
@@ -268,7 +292,7 @@ FTPServer.prototype.onconnection = function (controlSocket)
     if (this.isServiceEnabled())
     {
 
-        this.attachDefaultEventListeners(controlSocket);
+        this.attachDefaultControlEventListeners(controlSocket);
 
         this.replyWelcome(controlSocket);
 
@@ -276,7 +300,7 @@ FTPServer.prototype.onconnection = function (controlSocket)
 
         this.reply(controlSocket,this.REPLY.PRELIMINARY_SERVICE_DELAY);
 
-        this.attachDefaultEventListeners(controlSocket);
+        this.attachDefaultControlEventListeners(controlSocket);
 
         controlSocket.pause(); // Don't process data events
 
@@ -544,11 +568,41 @@ var ftpServer = new FTPServer({name : HOST_NAME,
 
 ftpServer.server.listen(ftpServer.configuration.port,ftpServer.configuration.host, ftpServer.onlistening.bind(ftpServer));
 
-/*ftpServer.disableService();
-console.log("Enabling service in 30 s");
-setTimeout(function ()
-           {
-               console.info("Enabling service NOW");
-               this.enableService();
+function Test(server)
+{
+    this.server = server;
+}
 
-           }.bind(ftpServer),30000);*/
+Test.prototype.disableThenEnableService = function (delay)
+{
+    var ftpServer = this.server;
+    // Test : disabling service
+    ftpServer.disableService();
+    console.log("Enabling service in ",delay);
+    setTimeout(function ()
+               {
+                   console.info("Enabling service NOW");
+                   this.enableService();
+
+               }.bind(ftpServer),delay);
+
+};
+
+Test.prototype.closeServer = function (delay)
+{
+      var ftpServer = this.server;
+    console.log('Closing server in 10s');
+    setTimeout(function ()
+               {
+                   console.info('Closing server');
+                   this.close();
+
+               }.bind(ftpServer),delay);
+
+};
+
+var test = new Test(ftpServer);
+
+//test.disableThenEnableService(10000);
+//test.closeServer(20000);
+
