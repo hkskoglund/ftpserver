@@ -4,11 +4,45 @@
 
 var net = require('net');
 
-var ALTERNATIVE_PORT_L = 8124;
-var DEFAULT_PORT_L = 21;
+/*
 
-var LOOPBACK_IP = '127.0.0.1';
-var HOST_NAME = 'FAKE FTP_SERVER';
+Sec. 3.2 ESTABLISHING DATA CONNECTIONS, p 18, http://www.ietf.org/rfc/rfc959.txt
+
+"The user-process default data port is the same as the control connection port (i.e., U).  The server-process default data port is the port adjacent to the control connection port (i.e., L-1)."
+
+"Every FTP implementation must support the use of the default data ports, and only the USER-PI can initiate a change to non-default ports. It is possible for the user to specify an alternate data port by use of the PORT command."
+
+Testing with wireshark:
+
+    GNOME Nautilus: ftp.uninett.no
+
+        request server to enter passive "listening" mode:
+        130	192.168.0.102:54840	128.39.3.170:ftp	FTP	Request: PASV
+        131	128.39.3.170:ftp	192.168.0.102:54840	FTP	Response: 227 Entering Passive Mode (128,39,3,170,94,200)
+        then immediatly connect to the data socket offered by the server (SYN SYNACK ACK handshake)
+        135	192.168.0.102	54840	128.39.3.170	ftp	FTP	Request: LIST -a
+        136	128.39.3.170	ftp	   192.168.0.102	54840	FTP	Response: 150 Accepted data connection
+        137	128.39.3.170	24264	192.168.0.102	36487	FTP-DATA	FTP Data: 1448 bytes
+        FTP Data (drwxr-xr-x   22 0          0                4096 Dec 20  2013 .\r\ndrwxr-xr-x   22 0          0                4096 Dec 20  2013 ..\r\ndrwxrwxr-x   10 11113      300              4096 Jun 20 11:01 FreeBSD\r\ndrwxr-xr-x   16 498
+
+    Firefox:
+        also uses PASV command
+
+        http://www.ncftp.com/ncftpd/doc/misc/ftp_and_firewalls.html
+
+            Due to NAT/Firewall use PASV command instead of PORT (user connect to server)
+*/
+
+var CONFIG = {
+    CONTROL_PORT_L : {
+        ALTERNATIVE : 8124,
+        DEFAULT : 21 },
+    DATA_PORT : {
+        DEFAULT : 20
+    },
+    LOOPBACK_IP : '127.0.0.1',
+    HOST_NAME : 'FAKE FTP_SERVER'
+};
 
 var CRLF = '\r\n', EOL = CRLF;
 var SP = ' ';
@@ -17,32 +51,70 @@ var SERVER_PREFIX = 'S:';
 
 function FTPServer (configuration)
 {
-    this.server = net.createServer(this.onControlConnection.bind(this));
+    // Server for control connections
+    this.controlServer = net.createServer(this.onControlConnection.bind(this));
 
-    this.server.on('close',this.onclose.bind(this));
+    this.controlServer.on('close',this.onControlServerClose.bind(this));
+
+    this.controlServer.on('error',this.onControlServerError.bind(this));
+
+    // Server for data connection - DTP
+    this.dataServer = net.createServer(this.onDataConnection.bind(this));
+
+     this.controlServer.on('close',this.onDataServerClose.bind(this));
+
+    this.controlServer.on('error',this.onDataServerError.bind(this));
 
     this.serviceUnavailable = false;
 
     this.pendingServiceReadyQueue = []; // Queue of users pending for service ready message
 
-    this.users = [];
+    this.controlUsers = [];
     
     this.configuration = configuration;
     
     if (this.configuration === undefined)
     {
         this.configuration = {};
-        this.configuration.name = HOST_NAME;
+        this.configuration.name = CONFIG.HOST_NAME;
         this.configuration.idletimeout = 0;
         console.info('Created default configuration',this.configuration);
     }
 
     if (!configuration.port)
-        configuration.port = DEFAULT_PORT_L;
+        configuration.port = CONFIG.CONTROL_PORT_L.DEFAULT;
 
-    this.server.maxConnections = this.configuration.maxConnections || 1;
-    console.log("Max connections",this.server.maxConnections);
+    this.controlServer.maxConnections = this.configuration.maxConnections || 1;
+    console.log("Max connections",this.controlServer.maxConnections);
+
+    this.mode = this.MODE.ACTIVE;
 }
+
+
+
+FTPServer.prototype.listen = function ()
+{
+    this.controlServer.listen(this.configuration.port,this.configuration.host, this.onControlListening.bind(this));
+    this.dataServer.listen(0,this.configuration.host,this.onDataListening.bind(this)); // Choose random port
+    // Linux : cat /proc/sys/net/ipv4/ip_local_port_range 32768 - 61000 port range for ephemeral ports
+    // http://en.wikipedia.org/wiki/Ephemeral_port
+    // http://nodejs.org/api/net.html#net_server_listen_port_host_backlog_callback
+};
+
+FTPServer.prototype.MODE = {
+    ACTIVE : 'active',
+    PASSIVE : 'passive'
+};
+
+FTPServer.prototype.onDataServerError = function (error)
+{
+    console.error('Data Server error',error);
+};
+
+FTPServer.prototype.onControlServerError = function (error)
+{
+    console.error('Control Server error',error);
+};
 
 // Get all matching commands, by comparing with all FTP commands
 FTPServer.prototype.findMatchingCommand = function(command)
@@ -62,22 +134,27 @@ FTPServer.prototype.findMatchingCommand = function(command)
 
 };
 
-FTPServer.prototype.onclose = function ()
+FTPServer.prototype.onControlServerClose = function ()
 {
     console.log(this.configuration.name+' closed/not listening for new user control connections.');
+};
+
+FTPServer.prototype.onDataServerClose = function ()
+{
+    console.log(this.configuration.name+' closed/not listening for new user data connections.');
 };
 
 FTPServer.prototype.close = function ()
 {
     var userSocket;
 
-    this.server.close();
+    this.controlServer.close();
 
     // End users
 
     for (var userNr=0; userNr < this.uses.length; userNr++)
     {
-        userSocket = this.users[userNr].controlSocket;
+        userSocket = this.controlUsers[userNr].controlSocket;
         this.reply(userSocket,this.REPLY.SERVICE_NOT_AVAILABLE,'Please close connection of your end.');
         userSocket.end();
         userSocket.destroy();
@@ -87,7 +164,7 @@ FTPServer.prototype.close = function ()
 
 FTPServer.prototype.getUser = function (controlSocket)
 {
-    return this.users.filter(function (socket) { return (socket == controlSocket); })[0];
+    return this.controlUsers.filter(function (socket) { return (socket == controlSocket); })[0];
 };
 
 
@@ -96,11 +173,28 @@ FTPServer.prototype._checkUsername = function (username)
     return true; // Allow any user
 };
 
+FTPServer.prototype._replyNotLoggedIn = function (user,msg)
+{
+    this.reply(user.controlSocket,this.REPLY.NOT_LOGGED_IN,msg);
+};
+
+FTPServer.prototype._okLogin = function (user,msg)
+{
+    if (!user.loggedIn) {
+        this.reply(user.controlSocket,this.REPLY.BAD_COMMAND_SEQUENCE,msg);
+          return false;
+    }
+    else
+       return true;
+};
+
 // Protocol Intepreter - parses a particular FTP command extracted from the command line
 FTPServer.prototype.protocolIntepreter = function (user)
 {
 
   console.log('Intepret:',user.command);
+
+
 
     switch (user.command.command)
     {
@@ -111,23 +205,54 @@ FTPServer.prototype.protocolIntepreter = function (user)
 
 
             user.username = user.command.arguments[0];
+            if (!user.username)
+                user.username = 'anonymous'; // Allow only USER without an argument
+
+            this.reply(user.controlSocket,this.REPLY.USER_LOGGED_IN);
+            user.loggedIn = true;
 
             break;
 
         case FTPServer.prototype.COMMAND.PASS :
 
-           // password = this.command[ip].arguments[0];
+            if (!this._okLogin(user,'User not logged in, specify USER first'))
+                break;
 
+            user.password = user.command.arguments[0];
+
+            this.reply(user.controlSocket,this.REPLY.USER_LOGGED_IN);
+
+            break;
+
+        case FTPServer.prototype.COMMAND.PASV:
+
+            if (!this._okLogin(user,'User not logged in, refusing passive mode (listening) for data connection'))
+                break;
+
+            this.mode = this.MODE.PASSIVE;
+
+            this.reply(user.controlSocket,this.REPLY.ENTERING_PASSIVE_MODE,' ('+this._getCommaFormattedAddress(this.dataServerAddress)+')');
+
+
+            break;
+
+        case FTPServer.prototype.COMMAND.RETR:
+
+            user.retrieve.pathname = user.command.arguments[0];
+
+            if (!user.loggedIn)
+                this._replyNotLoggedIn(user,'Cannot retrieve '+user.retrieve.pathname);
+
+            if (!user.retrieve.pathname)
+                this.reply(user.controlSocket,this.REPLY.SYNTAX_ERROR_IN_ARGUMENETS,'No pathname to file given as argument');
+
+            // TO DO : Check existence of file
             break;
 
        default :
+             this.reply(user.controlSocket,this.REPLY.POSITIVE_COMMAND_NOT_IMPLEMENTED);
             break;
     }
-    user.command.previousLine = user.command.line;
-
-    user.command.line = ''; // Init parsing of new command line
-
-    this.reply(user.controlSocket,this.REPLY.POSITIVE_COMMAND_NOT_IMPLEMENTED);
 
 };
 
@@ -168,7 +293,7 @@ FTPServer.prototype.processCommandLine = function (user,dataStr)
         this.protocolIntepreter(user);
     }
 
-   // FIX this.newCommandLine(userControlSocket);
+   user.command.line = ''; // Reset for next command line
 
     nextCommandLine = dataStr.substring(indexEOL+2); // Next command line or "" empty string;
     if (nextCommandLine.length)
@@ -203,7 +328,7 @@ FTPServer.prototype.removeUserFromQueue = function (queue,user)
 
 FTPServer.prototype.removeUserFromDefaultQueues = function(user)
 {
-    this.removeUserFromQueue(this.users,user);
+    this.removeUserFromQueue(this.controlUsers,user);
     this.removeUserFromQueue(this.pendingServiceReadyQueue,user);
 };
 
@@ -269,16 +394,23 @@ FTPServer.prototype.attachDefaultControlEventListeners = function (user)
       user.controlSocket.on('close',this.onControlClose.bind(this,user));
 };
 
+// Handler for 'conncetion'-event, called when user connect for exchanging data on a new socket
+FTPServer.prototype.onDataConnection = function (userDataSocket)
+{
+    console.log("User connected to data server");
+};
+
+// Handler for 'connection'-event, called for every user that access server on the listening host:port
 FTPServer.prototype.onControlConnection = function (userControlSocket)
 {
     var user;
 
      user = new User(userControlSocket);
-    this.users.push(user);
+    this.controlUsers.push(user);
 
     userControlSocket.setEncoding('utf-8'); // UTF-8 backwards compatible with ASCII, http://nodejs.org/api/stream.html#stream_readable_setencoding_encoding
 
-    this.server.getConnections(this.onNumberOfConnections.bind(this));
+    this.controlServer.getConnections(this.onNumberOfConnections.bind(this));
 
     console.log(Date.now(),'Remote '+user.ip+' connected to server');
 
@@ -310,6 +442,11 @@ FTPServer.prototype.onControlConnection = function (userControlSocket)
 
 };
 
+FTPServer.prototype._getFormattedIpAddr = function (addr)
+{
+    return addr.address+':'+addr.port;
+};
+
 // Adds watch on buffer size
 FTPServer.prototype.write = function (userControlSocket,message)
 {
@@ -336,11 +473,25 @@ FTPServer.prototype.reply = function (userControlSocket,reply,additionalDescript
       this.write(userControlSocket,reply.code+SP+reply.description+EOL);
 };
 
-FTPServer.prototype.onlistening = function ()
+// Return ip adr. of data server in (h1,h2,h3,h4,p1,p2) format required for PASV command response
+FTPServer.prototype._getCommaFormattedAddress = function (addr)
 {
-    console.log(arguments);
-       
-  console.log('Listening',this.server.address());
+    var portMsb = addr.port >> 8,
+        portLsb = addr.port & 0xFF;
+
+    return (addr.address+','+portMsb+','+portLsb).split('.').join(',');
+};
+
+FTPServer.prototype.onDataListening = function ()
+{
+    this.dataServerAddress = this.dataServer.address();
+    console.log('Listening for DATA connections',this._getFormattedIpAddr(this.dataServerAddress));
+};
+// Handler for 'listening' event for control server
+FTPServer.prototype.onControlListening = function ()
+{
+  this.controlServerAddress = this.controlServer.address();
+  console.log('Listening for CONTROL connections',this._getFormattedIpAddr(this.controlServerAddress));
 };
 
 FTPServer.prototype.disableService = function ()
@@ -348,7 +499,7 @@ FTPServer.prototype.disableService = function ()
     this.serviceUnavailable = true;
 
     // TO DO : If any data transfers are active, finish it before sending service unavailable
-    this.users.forEach(function (user)
+    this.controlUsers.forEach(function (user)
                                 {
                                    this.reply(user.controlSocket,this.REPLY.SERVICE_NOT_AVAILABLE);
                                 },this);
@@ -441,7 +592,15 @@ FTPServer.prototype.REPLY =
    // '225' : 'Data connection open; no transfer in progress.',
    // '226' : 'Closing data connection.',
    //'227' : 'Entering passive mode (h1,h2,h3,h4,p1,p2).',
-  //'230' : 'User logged in, proceed.',
+    ENTERING_PASSIVE_MODE :
+    {
+        code : '227',
+        description : 'Entering passive mode'
+    },
+    USER_LOGGED_IN : {
+        code : '230',
+        description : 'User logged in, proceed.'
+    },
   //  '250' : 'Requested file action okay, completed.',
  //    '257' : 'PATHNAME created.',
     
@@ -466,14 +625,25 @@ FTPServer.prototype.REPLY =
         code : '500',
         description : 'Syntax error, command unrecognized.'
     },
-    //'501' : 'Syntax error in parameters or arguments.',
+    SYNTAX_ERROR_IN_ARGUMENETS : {
+        code : '501',
+        description : 'Syntax error in parameters or arguments.'
+    },
     NEGATIVE_COMMAND_NOT_IMPLEMENTED : {
         code : '502',
         description : 'Command not implemented.'
-    }
-    //'503' : 'Bad sequence of commands.',
+    },
+    BAD_COMMAND_SEQUENCE : {
+        code : '503',
+        description : 'Bad sequence of commands.'
+    },
+
     //'504' : 'Command not implemented for that parameter.',
-    //'530' : 'Not logged in.',
+    NOT_LOGGED_IN : {
+      code : '530',
+      description : 'Not logged in.'
+    }
+
     //'532' : 'Need account for storing files.',
     //'550' : 'Requested action not taken. File unavailable (e.g., file not found, no access).',
     //'551' : 'Requested action aborted: page type unknown.',
@@ -569,7 +739,20 @@ function User(controlSocket)
     this.name = undefined;
     this.password = undefined;
 
+    this.loggedIn = false;
+
+    this.retrieve = {
+        pathname : undefined
+    };
+
+    this.store = {
+        pathname : undefined
+    };
+
+    //this.history = []; // Session history of commands
+
 }
+
 
 User.prototype.getSocketRemoteAddress = function (socket)
 {
@@ -587,24 +770,23 @@ User.prototype.showControlSocketStatistics = function ()
     console.info('Bytes written: '+this.controlSocket.bytesWritten+ ' read: '+this.controlSocket.bytesRead);
 };
 
-
-var ftpServer = new FTPServer({name : HOST_NAME,
-                            port : ALTERNATIVE_PORT_L,
-                            host : LOOPBACK_IP,
+var ftpServer = new FTPServer({name : CONFIG.HOST_NAME,
+                            port : CONFIG.CONTROL_PORT_L.ALTERNATIVE,
+                            host : CONFIG.LOOPBACK_IP,
                             idletimeout : 0,
                             maxConnections : 2
                               });
 
-ftpServer.server.listen(ftpServer.configuration.port,ftpServer.configuration.host, ftpServer.onlistening.bind(ftpServer));
+ftpServer.listen();
 
 function Test(server)
 {
-    this.server = server;
+    this.controlServer = server;
 }
 
 Test.prototype.disableThenEnableService = function (delay)
 {
-    var ftpServer = this.server;
+    var ftpServer = this.controlServer;
     // Test : disabling service
     ftpServer.disableService();
     console.log("Enabling service in ",delay);
@@ -619,7 +801,7 @@ Test.prototype.disableThenEnableService = function (delay)
 
 Test.prototype.closeServer = function (delay)
 {
-      var ftpServer = this.server;
+      var ftpServer = this.controlServer;
     console.log('Closing server in ',delay);
     setTimeout(function ()
                {
