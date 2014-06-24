@@ -58,13 +58,6 @@ function FTPServer (configuration)
 
     this.controlServer.on('error',this.onControlServerError.bind(this));
 
-    // Server for data connection - DTP
-    this.dataServer = net.createServer(this.onDataConnection.bind(this));
-
-     this.controlServer.on('close',this.onDataServerClose.bind(this));
-
-    this.controlServer.on('error',this.onDataServerError.bind(this));
-
     this.serviceUnavailable = false;
 
     this.pendingServiceReadyQueue = []; // Queue of users pending for service ready message
@@ -95,21 +88,13 @@ function FTPServer (configuration)
 FTPServer.prototype.listen = function ()
 {
     this.controlServer.listen(this.configuration.port,this.configuration.host, this.onControlListening.bind(this));
-    this.dataServer.listen(0,this.configuration.host,this.onDataListening.bind(this)); // Choose random port
-    // Linux : cat /proc/sys/net/ipv4/ip_local_port_range 32768 - 61000 port range for ephemeral ports
-    // http://en.wikipedia.org/wiki/Ephemeral_port
-    // http://nodejs.org/api/net.html#net_server_listen_port_host_backlog_callback
-};
+   };
 
 FTPServer.prototype.MODE = {
     ACTIVE : 'active',
     PASSIVE : 'passive'
 };
 
-FTPServer.prototype.onDataServerError = function (error)
-{
-    console.error('Data Server error',error);
-};
 
 FTPServer.prototype.onControlServerError = function (error)
 {
@@ -137,11 +122,6 @@ FTPServer.prototype.findMatchingCommand = function(command)
 FTPServer.prototype.onControlServerClose = function ()
 {
     console.log(this.configuration.name+' closed/not listening for new user control connections.');
-};
-
-FTPServer.prototype.onDataServerClose = function ()
-{
-    console.log(this.configuration.name+' closed/not listening for new user data connections.');
 };
 
 FTPServer.prototype.close = function ()
@@ -194,8 +174,6 @@ FTPServer.prototype.protocolIntepreter = function (user)
 
   console.log('Intepret:',user.command);
 
-
-
     switch (user.command.command)
     {
 
@@ -229,12 +207,21 @@ FTPServer.prototype.protocolIntepreter = function (user)
             if (!this._okLogin(user,'User not logged in, refusing passive mode (listening) for data connection'))
                 break;
 
+
             this.mode = this.MODE.PASSIVE;
 
-            this.reply(user.controlSocket,this.REPLY.ENTERING_PASSIVE_MODE,' ('+this._getCommaFormattedAddress(this.dataServerAddress)+')');
+            user.listen();
 
 
             break;
+
+        case FTPServer.prototype.COMMAND.LIST:
+
+              if (!this._okLogin(user,'User not logged in, cannot list directory contents'))
+                break;
+
+              break;
+
 
         case FTPServer.prototype.COMMAND.RETR:
 
@@ -405,14 +392,14 @@ FTPServer.prototype.onControlConnection = function (userControlSocket)
 {
     var user;
 
-     user = new User(userControlSocket);
+     user = new User(userControlSocket,this.configuration,this);
     this.controlUsers.push(user);
 
     userControlSocket.setEncoding('utf-8'); // UTF-8 backwards compatible with ASCII, http://nodejs.org/api/stream.html#stream_readable_setencoding_encoding
 
     this.controlServer.getConnections(this.onNumberOfConnections.bind(this));
 
-    console.log(Date.now(),'Remote '+user.ip+' connected to server');
+    console.log('User '+user.ip+' connected to server');
 
     if (this.configuration.idletimeout)
         console.log('Idle timeout for connection is ',this.configuration.idletimeout+' ms.');
@@ -476,22 +463,14 @@ FTPServer.prototype.reply = function (userControlSocket,reply,additionalDescript
 // Return ip adr. of data server in (h1,h2,h3,h4,p1,p2) format required for PASV command response
 FTPServer.prototype._getCommaFormattedAddress = function (addr)
 {
-    var portMsb = addr.port >> 8,
-        portLsb = addr.port & 0xFF;
-
-    return (addr.address+','+portMsb+','+portLsb).split('.').join(',');
+    return (addr.address+','+(addr.port >> 8)+','+(addr.port & 0xFF)).split('.').join(',');
 };
 
-FTPServer.prototype.onDataListening = function ()
-{
-    this.dataServerAddress = this.dataServer.address();
-    console.log('Listening for DATA connections',this._getFormattedIpAddr(this.dataServerAddress));
-};
 // Handler for 'listening' event for control server
 FTPServer.prototype.onControlListening = function ()
 {
   this.controlServerAddress = this.controlServer.address();
-  console.log('Listening for CONTROL connections',this._getFormattedIpAddr(this.controlServerAddress));
+  console.log('Listening for CONTROL connections on '+this._getFormattedIpAddr(this.controlServerAddress));
 };
 
 FTPServer.prototype.disableService = function ()
@@ -568,7 +547,7 @@ FTPServer.prototype.REPLY =
         code : '120',
         description : 'Service not available right now. Try again later.'
     },
-    //'120' : 'Service ready in nnn minutes',
+
     //'125' : 'Data connection already open; transfer starting.',
     //'150' : 'File status okay; about to open data connection.',
     
@@ -591,11 +570,11 @@ FTPServer.prototype.REPLY =
    // '221' : 'Service closing control connection.',
    // '225' : 'Data connection open; no transfer in progress.',
    // '226' : 'Closing data connection.',
-   //'227' : 'Entering passive mode (h1,h2,h3,h4,p1,p2).',
+
     ENTERING_PASSIVE_MODE :
     {
         code : '227',
-        description : 'Entering passive mode'
+        description : 'Entering passive mode, i.e listening for user data connection.'
     },
     USER_LOGGED_IN : {
         code : '230',
@@ -726,9 +705,12 @@ FTPServer.prototype.COMMAND = {
     NOOP : 'NOOP'
 };
 
-function User(controlSocket)
+function User(controlSocket,configuration,ftpServer)
 {
+   // console.log("User control socket",controlSocket);
+    this.ftpServer = ftpServer; // Allows access to methods
     this.controlSocket = controlSocket;
+    this.dataSocket = undefined;
     this.ip = this.getSocketRemoteAddress(controlSocket);
     this.command = {
        line : '',
@@ -749,9 +731,59 @@ function User(controlSocket)
         pathname : undefined
     };
 
+
     //this.history = []; // Session history of commands
 
+    this.configuration = configuration;
 }
+
+// Create data server process (aka DTP) for passive mode - called when user request 'PASV' on control connection
+User.prototype.listen = function ()
+{
+    // TO DO : a guard only allowing one data server (don't accept multiple PASV commands)
+    this.dataServer = net.createServer(this.onDataConnection.bind(this));
+
+    this.dataServer.on('close',this.onDataServerClose.bind(this));
+
+    this.dataServer.on('error',this.onDataServerError.bind(this));
+
+     this.dataServer.maxConnections =  1;
+    console.log('Data server max connections',this.dataServer.maxConnections);
+
+     this.dataServer.listen(0,this.configuration.host,this.onDataListening.bind(this)); // Choose random port
+    // Linux : cat /proc/sys/net/ipv4/ip_local_port_range 32768 - 61000 port range for ephemeral ports
+    // http://en.wikipedia.org/wiki/Ephemeral_port
+    // http://nodejs.org/api/net.html#net_server_listen_port_host_backlog_callback
+
+
+
+};
+
+User.prototype.onDataListening = function ()
+{
+    this.dataServerAddress = this.dataServer.address();
+    console.log('Listening for DATA connections on ',this.ftpServer._getFormattedIpAddr(this.dataServerAddress));
+
+    this.ftpServer.reply(this.controlSocket,this.ftpServer.REPLY.ENTERING_PASSIVE_MODE,' ('+this.ftpServer._getCommaFormattedAddress(this.dataServerAddress)+')');
+
+};
+
+// 'Connection'-event for data server
+User.prototype.onDataConnection = function (dataSocket)
+{
+    console.log('New data connection',dataSocket);
+    this.dataSocket = dataSocket;
+};
+
+User.prototype.onDataServerClose = function ()
+{
+    console.log('Data server closed for user ');
+};
+
+User.prototype.onDataServerError = function (error)
+{
+    console.error('Data server error for user',error);
+};
 
 
 User.prototype.getSocketRemoteAddress = function (socket)
@@ -767,7 +799,7 @@ User.prototype.getSocketRemoteAddress = function (socket)
 
 User.prototype.showControlSocketStatistics = function ()
 {
-    console.info('Bytes written: '+this.controlSocket.bytesWritten+ ' read: '+this.controlSocket.bytesRead);
+    console.info('Control connection:  w: '+this.controlSocket.bytesWritten+ ' r: '+this.controlSocket.bytesRead);
 };
 
 var ftpServer = new FTPServer({name : CONFIG.HOST_NAME,
