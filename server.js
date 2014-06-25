@@ -194,6 +194,16 @@ FTPServer.prototype.protocolIntepreter = function (user)
 
             break;
 
+        case FTPServer.prototype.COMMAND.QUIT :
+
+            this.reply(user.controlSocket,this.REPLY.CLOSE_CONTROL_CONNECTION_221,'Goodbye');
+            user.controlSocket.end();
+            user.controlSocket.destroy();
+
+            this.removeUserFromDefaultQueues(user);
+
+            break;
+
         case FTPServer.prototype.COMMAND.PASV:
 
             if (!this._okLogin(user,'User not logged in, refusing passive mode (listening) for data connection'))
@@ -456,6 +466,7 @@ FTPServer.prototype.reply = function (userControlSocket,reply,additionalDescript
     {
         console.trace();
          console.error(Date.now(),'Reply is not valid/undefined, cannot write message to userControlSocket');
+        return;
     }
 
    if (additionalDescription)
@@ -580,7 +591,11 @@ FTPServer.prototype.REPLY =
         code : '220',
         description : 'Service ready for new user.'
    },
-   // '221' : 'Service closing control connection.',
+
+    CLOSE_CONTROL_CONNECTION_221 : {
+       code : '221',
+       description : 'Service closing control connection.'
+    },
 
     DATA_CONNECTION_OPEN : {
         code : '225',
