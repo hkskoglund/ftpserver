@@ -785,11 +785,14 @@ User.prototype.listen = function ()
         this._replyEnteringPassiveMode();
         return;*/
         console.log('dataserver',this.dataServer);
-        if (!this.dataServer.closed)
+        if (!this.dataServerClosed) {
             this.dataServer.close();
+            this.dataServerClosed = true;
+        }
     }
 
     this.dataServer = net.createServer(this.onDataServerConnection.bind(this));
+    this.dataServerClosed = false;
 
     this.dataServer.on('close',this.onDataServerClose.bind(this));
 
@@ -913,7 +916,7 @@ User.prototype.onDataServerClose = function ()
         this.dataSockets[dataSocketNr].destroy();
     }
         */
-    this.dataServer.closed = true;
+    this.dataServerClosed = true;
 };
 
 User.prototype.onDataServerError = function (error)
