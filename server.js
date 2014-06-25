@@ -1,6 +1,8 @@
 /* global console:true, require: true, setTimeout: true*/
 
-'use strict';
+(function () {
+
+    'use strict';
 
 var net = require('net');
 
@@ -208,11 +210,18 @@ FTPServer.prototype.protocolIntepreter = function (user)
                 break;
 
               if (!user.isConnected()) {
-                  this.reply(user.controlSocket,this.REPLY.NO_DATA_CONNECTION,'Cannot list directory without a data connection, try PASV first');
+                  //this.reply(user.controlSocket,this.REPLY.NO_DATA_CONNECTION,'Cannot list directory without a data connection');
+                    // Issue: LIST command can preceede opening of data conncetion -> must buffer data
+            user.dataBuffer.push('drwxrwxr-x   10 11113      300              4096 Jun 20 11:01 FreeBSD\r\n');
+
                   break;
               }
 
+              user.replyData('drwxrwxr-x   10 11113      300              4096 Jun 20 11:01 FreeBSD\r\n');
+
               break;
+
+
 
 
         case FTPServer.prototype.COMMAND.RETR:
@@ -226,6 +235,14 @@ FTPServer.prototype.protocolIntepreter = function (user)
                 this.reply(user.controlSocket,this.REPLY.SYNTAX_ERROR_IN_ARGUMENETS,'No pathname to file given as argument');
 
             // TO DO : Check existence of file
+            break;
+
+
+        // Optional according to RFC-959
+
+        case FTPServer.prototype.COMMAND.SYST:
+
+            this.reply(user.controlSocket,this.REPLY.SYSTEM_TYPE,'node.js for Windows/UNIX/Mac');
             break;
 
        default :
@@ -371,12 +388,6 @@ FTPServer.prototype.attachDefaultControlEventListeners = function (user)
       user.controlSocket.on('error',this.onControlError.bind(this,user));
 
       user.controlSocket.on('close',this.onControlClose.bind(this,user));
-};
-
-// Handler for 'conncetion'-event, called when user connect for exchanging data on a new socket
-FTPServer.prototype.onDataConnection = function (userDataSocket)
-{
-    console.log("User connected to data server");
 };
 
 // Handler for 'connection'-event, called for every user that access server on the listening host:port
@@ -540,7 +551,12 @@ FTPServer.prototype.REPLY =
         description : 'Service not available right now. Try again later.'
     },
 
-    //'125' : 'Data connection already open; transfer starting.',
+
+    DATA_CONNECTION_OPEN_TRANSFER_STARTING_125:
+    {
+        code : '125',
+        description : 'Data connection already open: transfer starting.'
+    },
     //'150' : 'File status okay; about to open data connection.',
     
     // Positive Completion reply
@@ -554,7 +570,11 @@ FTPServer.prototype.REPLY =
     //'212' : 'Directory status.',
     //'213' : 'File status.',
     //'214' : 'Help message.',
-    //'215' : 'NAME system type.',
+    SYSTEM_TYPE : {
+        code : '215',
+        description : 'System type.'
+    },
+
     SERVICE_READY : {
         code : '220',
         description : 'Service ready for new user.'
@@ -565,9 +585,13 @@ FTPServer.prototype.REPLY =
         code : '225',
         description : 'Data connection open; no transfer in progress.'
     },
-   // '226' : 'Closing data connection.',
 
-    ENTERING_PASSIVE_MODE :
+    CLOSING_DATA_CONNECTION_226 : {
+        code : '226',
+        description : 'Closing data connection.'
+    },
+
+    ENTERING_PASSIVE_MODE_227 :
     {
         code : '227',
         description : 'Entering passive mode, i.e listening for user data connection.'
@@ -708,7 +732,12 @@ FTPServer.prototype.COMMAND = {
     SYST : 'SYST',
     STAT : 'STAT',
     HELP : 'HELP',
-    NOOP : 'NOOP'
+    NOOP : 'NOOP',
+
+    // Additional commands, not specified in RFC 959
+
+    FEAT : 'FEAT',
+    OPTS : 'OPTS'
 };
 
 function User(controlSocket,configuration,ftpServer)
@@ -743,13 +772,24 @@ function User(controlSocket,configuration,ftpServer)
     this.configuration = configuration;
 
     this.mode = this.MODE.ACTIVE;
+
+    this.dataBuffer = [];
 }
 
 // Create data server process (aka DTP) for passive mode - called when user request 'PASV' on control connection
 User.prototype.listen = function ()
 {
-    // TO DO : a guard only allowing one data server (don't accept multiple PASV commands)
-    this.dataServer = net.createServer(this.onDataConnection.bind(this));
+    if (this.dataServer)
+    {
+        /*console.warn('Reusing previous data server connection, still listening on',this.dataServerAddress);
+        this._replyEnteringPassiveMode();
+        return;*/
+        console.log('dataserver',this.dataServer);
+        if (!this.dataServer.closed)
+            this.dataServer.close();
+    }
+
+    this.dataServer = net.createServer(this.onDataServerConnection.bind(this));
 
     this.dataServer.on('close',this.onDataServerClose.bind(this));
 
@@ -758,13 +798,23 @@ User.prototype.listen = function ()
      this.dataServer.maxConnections =  1;
     console.log('Data server max connections',this.dataServer.maxConnections);
 
-     this.dataServer.listen(0,this.configuration.host,this.onDataListening.bind(this)); // Choose random port
+     this.dataServer.listen(0,this.configuration.host,this.onDataServerListening.bind(this)); // Choose random port
     // Linux : cat /proc/sys/net/ipv4/ip_local_port_range 32768 - 61000 port range for ephemeral ports
     // http://en.wikipedia.org/wiki/Ephemeral_port
     // http://nodejs.org/api/net.html#net_server_listen_port_host_backlog_callback
 
 
     this.mode = this.MODE.PASSIVE;
+
+
+
+};
+
+User.prototype.replyData = function (data)
+{
+    this.ftpServer.reply(this.controlSocket,this.ftpServer.REPLY.DATA_CONNECTION_OPEN_TRANSFER_STARTING_125);
+    this.dataSockets[0].end(data);
+    this.ftpServer.reply(this.controlSocket,this.ftpServer.REPLY.CLOSING_DATA_CONNECTION_226);
 
 };
 
@@ -773,13 +823,19 @@ User.prototype.isConnected = function ()
     return (this.dataSockets.length > 0);
 };
 
-User.prototype.onDataListening = function ()
+User.prototype._replyEnteringPassiveMode = function ()
+{
+    var controlServer = this.ftpServer;
+
+    controlServer.reply(this.controlSocket,controlServer.REPLY.ENTERING_PASSIVE_MODE_227,' ('+controlServer._getCommaFormattedAddress(this.dataServerAddress)+')');
+};
+
+User.prototype.onDataServerListening = function ()
 {
     var controlServer = this.ftpServer;
     this.dataServerAddress = this.dataServer.address();
-    console.log('Listening for DATA connections on ',this.ftpServer._getFormattedIpAddr(this.dataServerAddress));
-
-    controlServer.reply(this.controlSocket,controlServer.REPLY.ENTERING_PASSIVE_MODE,' ('+controlServer._getCommaFormattedAddress(this.dataServerAddress)+')');
+    console.log('Listening for DATA connections on ',controlServer._getFormattedIpAddr(this.dataServerAddress));
+    this._replyEnteringPassiveMode();
 
 };
 
@@ -792,7 +848,15 @@ User.prototype.onData = function (dataSocket,data)
 // http://nodejs.org/api/net.html#net_event_end, emitted when the other end of the sockets emits FIN
 User.prototype.onDataEnd = function (dataSocket)
 {
-    console.log('Data connection: end',this.getSocketRemoteAddress(dataSocket));
+     var indx;
+    console.log('Data connection: User closed connection, received FIN',this.getSocketRemoteAddress(dataSocket));
+
+   //  this.ftpServer.reply(this.controlSocket,this.ftpServer.REPLY.CLOSING_DATA_CONNECTION_226);
+
+    indx = this.dataSockets.indexOf(dataSocket);
+    if (indx !== -1)
+        this.dataSockets.splice(indx,1);
+
 };
 
 User.prototype.onDataError = function (dataSocket,error)
@@ -802,10 +866,14 @@ User.prototype.onDataError = function (dataSocket,error)
 
 User.prototype.onDataClose = function (dataSocket,had_error)
 {
+    // http://nodejs.org/api/net.html#net_net_createserver_options_connectionlistener
+    // By default allowHalfOpen === false -> socket is closed (FIN sent) from server automatically when user closes
     if (had_error)
         console.log('Data connection: socket closed due to transmission error',this.getSocketRemoteAddress(dataSocket));
     else
       console.log('Data connection: close',this.getSocketRemoteAddress(dataSocket));
+
+    this.dataServer.close();
 };
 
 User.prototype.attachDefaultDataEventListeners = function (dataSocket)
@@ -819,25 +887,33 @@ User.prototype.attachDefaultDataEventListeners = function (dataSocket)
       dataSocket.on('close',this.onDataClose.bind(this,dataSocket));
 };
 
-// 'Connection'-event for data server
-User.prototype.onDataConnection = function (dataSocket)
+// 'Connection'-event for data server, i.e the moment when the user connects on the data connection
+User.prototype.onDataServerConnection = function (dataSocket)
 {
+    var dataBuffer;
     this.dataIp = this.getSocketRemoteAddress(dataSocket);
     console.log('New data connection from '+this.dataIp);
     this.dataSockets.push(dataSocket);
     this.attachDefaultDataEventListeners(dataSocket);
 
+    if (this.dataBuffer.length > 0) {
+        dataBuffer = this.dataBuffer.shift();
+        console.info('Writing buffered data with FIN',dataBuffer);
+        this.replyData(dataBuffer);
+    }
+
 };
 
 User.prototype.onDataServerClose = function ()
 {
-    console.log('Data server closed for user ');
+    console.log('Data server closed');
    /* for (var dataSocketNr = 0; dataSocketNr < this.dataSockets.length; dataSocketNr++)
     {
         this.dataSockets[dataSocketNr].close();
         this.dataSockets[dataSocketNr].destroy();
     }
         */
+    this.dataServer.closed = true;
 };
 
 User.prototype.onDataServerError = function (error)
@@ -915,3 +991,4 @@ var test = new Test(ftpServer);
 //test.disableThenEnableService(30000);
 //test.closeServer(40000);
 
+})();
