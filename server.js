@@ -215,14 +215,7 @@ FTPServer.prototype.protocolIntepreter = function (user)
                 break;
               }
 
-              if (!user.isConnected()) {
-                      // Issue: LIST command can preceede opening of data conncetion -> must buffer data
-                user.dataBuffer.push('drwxrwxr-x   10 11113      300              4096 Jun 20 11:01 FreeBSD\r\n');
-
-                  break;
-              }
-
-              user.replyData('drwxrwxr-x   10 11113      300              4096 Jun 20 11:01 FreeBSD\r\n');
+              user.replyDataEnd('drwxrwxr-x   10 11113      300              4096 Jun 20 11:01 FreeBSD\r\n');
 
               break;
 
@@ -814,18 +807,27 @@ User.prototype.listen = function ()
     // http://en.wikipedia.org/wiki/Ephemeral_port
     // http://nodejs.org/api/net.html#net_server_listen_port_host_backlog_callback
 
-
     this.mode = this.MODE.PASSIVE;
-
-
 
 };
 
-User.prototype.replyData = function (data)
+// Write data to user and send FIN (half closing)
+User.prototype.replyDataEnd = function (data)
 {
+    if (!this.isConnected()) {
+          // Issue: LIST command can preceede opening of data conncetion -> must buffer data
+        this.dataBuffer.push(data);
+
+        return;
+  }
+
     this.ftpServer.reply(this.controlSocket,this.ftpServer.REPLY.DATA_CONNECTION_OPEN_TRANSFER_STARTING_125);
+
     this.dataSockets[0].end(data);
-    this.ftpServer.reply(this.controlSocket,this.ftpServer.REPLY.CLOSING_DATA_CONNECTION_226);
+
+    this.dataServer.close();
+
+    this.ftpServer.reply(this.controlSocket,this.ftpServer.REPLY.CLOSING_DATA_CONNECTION_226); // data server is closed when user closes (i.e when FIN received from user)
 
 };
 
@@ -884,7 +886,6 @@ User.prototype.onDataClose = function (dataSocket,had_error)
     else
       console.log('Data connection: close',this.getSocketRemoteAddress(dataSocket));
 
-    this.dataServer.close();
 };
 
 User.prototype.attachDefaultDataEventListeners = function (dataSocket)
@@ -910,7 +911,7 @@ User.prototype.onDataServerConnection = function (dataSocket)
     if (this.dataBuffer.length > 0) {
         dataBuffer = this.dataBuffer.shift();
         console.info('Writing buffered data with FIN',dataBuffer);
-        this.replyData(dataBuffer);
+        this.replyDataEnd(dataBuffer);
     }
 
 };
