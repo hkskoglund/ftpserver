@@ -209,10 +209,15 @@ FTPServer.prototype.protocolIntepreter = function (user)
               if (!this._okLogin(user,'User not logged in, cannot list directory contents'))
                 break;
 
+              if (user.mode !== User.prototype.MODE.PASSIVE)
+              {
+                this.reply(user.controlSocket,this.REPLY.NO_DATA_CONNECTION_425,'Please enable passive mode with PASV command');
+                break;
+              }
+
               if (!user.isConnected()) {
-                  //this.reply(user.controlSocket,this.REPLY.NO_DATA_CONNECTION,'Cannot list directory without a data connection');
-                    // Issue: LIST command can preceede opening of data conncetion -> must buffer data
-            user.dataBuffer.push('drwxrwxr-x   10 11113      300              4096 Jun 20 11:01 FreeBSD\r\n');
+                      // Issue: LIST command can preceede opening of data conncetion -> must buffer data
+                user.dataBuffer.push('drwxrwxr-x   10 11113      300              4096 Jun 20 11:01 FreeBSD\r\n');
 
                   break;
               }
@@ -444,7 +449,10 @@ FTPServer.prototype.write = function (userControlSocket,message)
     if (userControlSocket.bufferSize)
         console.log('Internal node character buffer size',userControlSocket.bufferSize);
     console.log(SERVER_PREFIX,message);
-    userControlSocket.write(message);
+    // http://nodejs.org/api/net.html#net_socket_write_data_encoding_callback
+    if (!userControlSocket.write(message))
+        console.warn('All socket data was not written to kernel buffer (parts of data retained in user memory)');
+
 };
 
 // Convenience function that adds SP and EOL (end-of-line)
@@ -615,7 +623,7 @@ FTPServer.prototype.REPLY =
         description : 'Service not available, closing control connection.'
     },
 
-    NO_DATA_CONNECTION : {
+    NO_DATA_CONNECTION_425 : {
         code : '425',
         description : 'Data connection not open.',
         rfc_description : 'Cannot open data connection.'
@@ -909,7 +917,7 @@ User.prototype.onDataServerConnection = function (dataSocket)
 
 User.prototype.onDataServerClose = function ()
 {
-    console.log('Data server closed');
+    console.log('Data server closed',this.ftpServer._getFormattedIpAddr(this.dataServerAddress));
    /* for (var dataSocketNr = 0; dataSocketNr < this.dataSockets.length; dataSocketNr++)
     {
         this.dataSockets[dataSocketNr].close();
@@ -921,7 +929,7 @@ User.prototype.onDataServerClose = function ()
 
 User.prototype.onDataServerError = function (error)
 {
-    console.error('Data server error for user',error);
+    console.error('Data server error',error);
 };
 
 
