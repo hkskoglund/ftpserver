@@ -254,7 +254,7 @@ FTPServer.prototype.protocolIntepreter = function (user)
 
              // If there exists no data server, PASV has not been entered
 
-              if (user.dataServers.length === 0)
+              if (!user.dataServer)
               {
                 this.reply(user.controlSocket,this.REPLY.NO_DATA_CONNECTION_425,'Please enable passive mode with PASV command');
                 break;
@@ -858,7 +858,9 @@ function User(controlSocket,configuration,ftpServer)
     // i.e LIST command received before user is connected to data server
     this.dataConnectCB = [];
 
-    this.dataServers = [];
+    this.dataServer = undefined;
+
+    this.dataSockets = [];
 }
 
 User.prototype._createDataServer = function ()
@@ -867,6 +869,7 @@ User.prototype._createDataServer = function ()
     var dataServer;
 
     dataServer = net.createServer();
+     this.dataServer = dataServer;
 
     dataServer.on('connection',this.onDataServerConnection.bind(this,dataServer));
 
@@ -882,11 +885,9 @@ User.prototype._createDataServer = function ()
     // http://en.wikipedia.org/wiki/Ephemeral_port
     // http://nodejs.org/api/net.html#net_server_listen_port_host_backlog_callback
 
-    this.dataServers.push(dataServer);
-
-
 };
 
+// In case user request multiple PASV commands in the same session, there must be a way of closing the previous data server and  ending the users attached to the server
 User.prototype.tryDataServerClose = function (server)
 {
     var dataServer;
@@ -894,11 +895,17 @@ User.prototype.tryDataServerClose = function (server)
      try {
             console.log("TRYING to close data server");
            if (!server)
-              dataServer = this.dataServers[0];
+              dataServer = this.dataServer;
          else
              dataServer = server;
 
-           dataServer.close();
+         if (this.dataServer) {
+
+             dataServer.once('close',function _onForcedClose() { console.log('Destroyed sockets, server closed now'); });
+               dataServer.close();
+             this.dataSockets.forEach(function _destroySocket(socket) { socket.destroy(); });
+             }
+
         } catch (err)
         {
             console.error('Failed attempt close data server',err);
@@ -908,14 +915,7 @@ User.prototype.tryDataServerClose = function (server)
 // Create data server process (aka DTP) for passive mode - called when user request 'PASV' on control connection
 User.prototype.listen = function ()
 {
-    var dataServer;
-    console.log("LISTEN");
-    // In case user request multiple PASV commands in the same session, there must be a way of closing the previous data server and
-    // ending the users attached to the server
-
-    if (this.dataServers.length) {
-       this.tryDataServerClose();
-    }
+     this.tryDataServerClose();
 
      this._createDataServer();
 };
@@ -926,7 +926,7 @@ User.prototype.replyDataEnd = function (data)
 
     this.ftpServer.reply(this.controlSocket,this.ftpServer.REPLY.DATA_CONNECTION_OPEN_TRANSFER_STARTING_125);
 
-    this.lastActiveDataSocket.end(data);
+    this.dataSockets[0].end(data);
 
    // this.dataServer.close(); // When user sends FIN -> server is automatically closed
 
@@ -936,7 +936,7 @@ User.prototype.replyDataEnd = function (data)
 
 User.prototype.isConnected = function ()
 {
-    return this.lastActiveDataSocket;
+    return this.dataSockets.length > 0;
 };
 
 User.prototype._replyEnteringPassiveMode = function (dataServer)
@@ -992,8 +992,9 @@ User.prototype.onDataClose = function (dataSocket,dataServer,had_error)
         if (err)
             console.error('Cannot get number of server connections',err);
         else if (count === 0) {
-            console.log("No active sockets on data server, closing");
-            this.tryDataServerClose(dataServer);
+            console.log('No connected sockets to data server');
+        } else {
+            console.log('Connected data sockets to data server',count);
         }
     }.bind(this));
 };
@@ -1015,7 +1016,8 @@ User.prototype.onDataServerConnection = function (dataServer,dataSocket)
     var connectCB;
 
     console.log('New data connection from '+this.getSocketRemoteAddress(dataSocket));
-    this.lastActiveDataSocket = dataSocket;
+    this.dataSockets.push(dataSocket);
+
 
     //this.dataSockets.push(dataSocket);
     this.attachDefaultDataEventListeners(dataSocket,dataServer);
@@ -1034,13 +1036,8 @@ User.prototype.onDataServerClose = function (dataServer)
 {
    // console.log('data server',dataServer);
     console.log('Data server closed');
-    var indx;
 
-    indx = this.dataServers.indexOf(dataServer);
-    if (indx !== -1)
-        this.dataServers.splice(indx,1);
-
-    this.lastActiveDataSocket = undefined;
+    this.dataSockets = [];
 
 };
 
