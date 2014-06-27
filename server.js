@@ -213,27 +213,30 @@ FTPServer.prototype.protocolIntepreter = function (user)
 
             //  Postpone quit if file transfer active, http://www.ietf.org/rfc/rfc959.txt p. 26
 
-            if (user.dataServer)
+            if (!user.dataServer)
+            {
+                this.goodbye(user);
+             }
+            else
             {
                 user.dataServer.getConnections(function (err,count) {
-                    if (!err && count)
-                        console.info('Data server is connected to '+count+' user(s)');
 
                     if (err) {
                         console.error('Failed to obtain number of connected users to data server',err);
+                        return;
 
                     }
-                });
 
-                console.log('Data server as connected one or more users, postponing quit');
+                    if (count) {
+                        console.info('Data server is connected to '+count+' user(s)');
+                        // TO DO : postpone quit
+                    } else
+                    {
+                        this.goodbye(user);
+                    }
 
-                //user.postPoneCallbacks.push(this.goodbye.bind(this,user));
-
-
-                return;
+                }.bind(this));
             }
-
-            this.goodbye(user);
 
             break;
 
@@ -425,10 +428,10 @@ FTPServer.prototype.onControlError = function (socket,error)
     console.error(Date.now(),'Error on control connection',error);
 };
 
-FTPServer.prototype.onNumberOfConnections = function (error,count)
+FTPServer.prototype.onNumberOfConnections = function (msg,error,count)
 {
     if (!error)
-        console.info('Established connections '+count);
+        console.info(msg+count);
     else
         console.error('error',error);
 };
@@ -461,7 +464,7 @@ FTPServer.prototype.onControlConnection = function (userControlSocket)
 
     userControlSocket.setEncoding('utf-8'); // UTF-8 backwards compatible with ASCII, http://nodejs.org/api/stream.html#stream_readable_setencoding_encoding
 
-    this.controlServer.getConnections(this.onNumberOfConnections.bind(this));
+    this.controlServer.getConnections(this.onNumberOfConnections.bind(this,'Established control connections '));
 
     console.log('User '+user.ip+' connected to server');
 
@@ -978,25 +981,28 @@ User.prototype.onDataError = function (dataSocket,dataServer,error)
     console.error('Data connection: error',this.getSocketRemoteAddress(dataSocket),error);
 };
 
+User.prototype.onGetDataConnections = function (err,count)
+{
+    if (err)
+            console.error('Cannot get number of server connections',err);
+        else if (count === 0) {
+            console.log('No connected sockets to data server');
+
+        } else {
+            console.log('Connected data sockets to data server',count);
+        }
+};
+
 User.prototype.onDataClose = function (dataSocket,dataServer,had_error)
 {
     // http://nodejs.org/api/net.html#net_net_createserver_options_connectionlistener
     // By default allowHalfOpen === false -> socket is closed (FIN sent) from server automatically when user closes
     if (had_error)
-        console.log('Data connection: socket closed due to transmission error',this.getSocketRemoteAddress(dataSocket));
+        console.log('Data connection: socket closed (had transmission error)',this.getSocketRemoteAddress(dataSocket));
     else
-      console.log('Data connection: close',this.getSocketRemoteAddress(dataSocket));
+      console.log('Data connection: socket closed',this.getSocketRemoteAddress(dataSocket));
 
-    // Close server when there is no active sockets left
-    dataServer.getConnections(function (err,count) {
-        if (err)
-            console.error('Cannot get number of server connections',err);
-        else if (count === 0) {
-            console.log('No connected sockets to data server');
-        } else {
-            console.log('Connected data sockets to data server',count);
-        }
-    }.bind(this));
+    dataServer.getConnections(this.onGetDataConnections.bind(this));
 };
 
 User.prototype.attachDefaultDataEventListeners = function (dataSocket,dataServer)
@@ -1018,8 +1024,6 @@ User.prototype.onDataServerConnection = function (dataServer,dataSocket)
     console.log('New data connection from '+this.getSocketRemoteAddress(dataSocket));
     this.dataSockets.push(dataSocket);
 
-
-    //this.dataSockets.push(dataSocket);
     this.attachDefaultDataEventListeners(dataSocket,dataServer);
 
     // Only take the first since FIN is used to signal EOF in passive mode
@@ -1029,6 +1033,8 @@ User.prototype.onDataServerConnection = function (dataServer,dataSocket)
         connectCB();
 
     this.dataConnectCB = [];
+
+    this.dataServer.close(); // Only allow one connection, then close
 
 };
 
@@ -1126,7 +1132,19 @@ function MemoryFS()
 
 MemoryFS.prototype.ls = function ()
 {
-    return 'drwxrwxr-x   10 11113      300              4096 Jun 20 11:01 FreeBSD\r\n';
+
+    // Field 1 : premissions
+    // Field 2 : number of hardlinks
+    // Field 3 : ?
+    // Field 4 : ?
+    // Field 5 : size of file in bytes, for directories 4096?
+    // Field 6 : modification date (MUST be english)
+    //  can be changed with --time-style option to ls command, i.e 'ls --time-style=iso/full-iso'
+    // Field 7 : file/directory name
+
+    // 'drwxrwxr-x   10 11113      300              4096 Jun 20 11:01 FreeBSD\r\n'+
+
+    return '-rw-rw-r--    1 11113      300                35 Jun 27 11:44 helloworld.txt\r\n';
 };
 
 MemoryFS.prototype.pwd = function ()
