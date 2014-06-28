@@ -4,7 +4,8 @@
 
     'use strict';
 
-var net = require('net');
+    var net = require('net');
+    var path = require('path');
 
 /*
 
@@ -179,6 +180,8 @@ FTPServer.prototype.goodbye = function (user)
 FTPServer.prototype.protocolIntepreter = function (user)
 {
 
+    var dataType;
+
   console.log('Intepret:',user.command);
 
     switch (user.command.command)
@@ -286,10 +289,63 @@ FTPServer.prototype.protocolIntepreter = function (user)
             if (!user.loggedIn)
                 this._replyNotLoggedIn(user,'Cannot retrieve '+user.retrieve.pathname);
 
-            if (!user.retrieve.pathname)
-                this.reply(user.controlSocket,this.REPLY.SYNTAX_ERROR_IN_ARGUMENETS,'No pathname to file given as argument');
+             if (!user.dataServer)
+              {
+                this.reply(user.controlSocket,this.REPLY.NO_DATA_CONNECTION_425,'Please enable passive mode with PASV command');
+                break;
+              }
 
-            // TO DO : Check existence of file
+            if (!user.retrieve.pathname)
+                this.reply(user.controlSocket,this.REPLY.SYNTAX_ERROR_IN_ARGUMENTS,'No pathname to file given as argument');
+
+            if (!this.fileSystem.exists(user.retrieve.pathname))
+                this.reply(user.controlSocket,this.REPLY.REQUESTED_ACTION_NOT_TAKEN,'File does not exist');
+
+
+            if (!user.isConnected()) {
+                    console.info('User is not connected to data server yet, RETR is queued for execution');
+                    user.dataConnectCB.push(function ()
+                                        {
+                                             user.replyDataEnd(this.fileSystem.get(user.retrieve.pathname));
+                                        }.bind(this));
+                }
+                else {
+                    user.replyDataEnd(this.fileSystem.get(user.retrieve.pathname));
+                }
+
+
+            break;
+
+        case FTPServer.prototype.COMMAND.TYPE:
+
+            dataType = user.command.arguments[0].toUpperCase(); // Be flexible
+
+            if (!dataType)
+            {
+                this.reply(user.controlSocket,this.REPLY.SYNTAX_ERROR_IN_ARGUMENTS,'Missing A,E,I argument');
+                break;
+            }
+
+            switch (dataType)
+            {
+                    case 'I' :
+
+                        user.setEncoding(user.ENCODING.UTF8);
+                        this.reply(user.controlSocket,this.REPLY.OK_COMMAND,'UTF8 data encoding');
+                        break;
+
+                    case 'A' :
+
+                        user.setEncoding(user.ENCODING.ASCII);
+                        this.reply(user.controlSocket,this.REPLY.OK_COMMAND,'ASCII data encoding');
+                        break;
+
+                    default :
+
+                        this.reply(user.controlSocket,this.REPLY.COMMAND_NOT_IMPLEMENTED_FOR_PARAMETER_504);
+                        break;
+            }
+
             break;
 
 
@@ -304,9 +360,19 @@ FTPServer.prototype.protocolIntepreter = function (user)
              this.reply(user.controlSocket,this.REPLY.OK_PATH,'"'+this.fileSystem.pwd()+'" current path');
             break;
 
+        case FTPServer.prototype.COMMAND.CWD:
+
+            // Chrome: CWD /welcome.msg
+            // Response : 550 /welcome.msg not a directory (ftp.uninett.no)
+
+             this.fileSystem.cwd(path.dirname(user.command.arguments[0]));
+              this.reply(user.controlSocket,this.REPLY.FILE_ACTION_OK_250,'Current directory is '+this.fileSystem.pwd());
+            break;
+
+
         // Chrome uses the SIZE command after the PWD command (size of directory)
         case FTPServer.prototype.COMMAND.SIZE:
-            this.reply(user.controlSocket,this.REPLY.REQUESTED_ACTION_NOT_TAKEN);
+            this.reply(user.controlSocket,this.REPLY.FILE_STATUS_213,this.fileSystem.size(user.command.arguments[0]));
             break;
 
        default :
@@ -402,6 +468,8 @@ FTPServer.prototype.onControlEnd = function (user,data)
 {
 
     console.log('User '+user.ip+' disconnected control connection');
+
+    user.tryDataServerClose(); // Close data server
 
     user.showControlSocketStatistics();
 
@@ -517,6 +585,7 @@ FTPServer.prototype.write = function (userControlSocket,message)
 // Convenience function that adds SP and EOL (end-of-line)
 FTPServer.prototype.reply = function (userControlSocket,reply,additionalDescription)
 {
+    var description;
  
     if (reply === undefined)
     {
@@ -525,8 +594,12 @@ FTPServer.prototype.reply = function (userControlSocket,reply,additionalDescript
         return;
     }
 
-   if (additionalDescription)
-      this.write(userControlSocket,reply.code+SP+reply.description+SP+additionalDescription+EOL);
+   if (additionalDescription) {
+       if (reply.description === '')
+           this.write(userControlSocket,reply.code+SP+additionalDescription+EOL);
+       else
+         this.write(userControlSocket,reply.code+SP+reply.description+SP+additionalDescription+EOL);
+   }
     else
       this.write(userControlSocket,reply.code+SP+reply.description+EOL);
 };
@@ -628,7 +701,11 @@ FTPServer.prototype.REPLY =
     //'150' : 'File status okay; about to open data connection.',
     
     // Positive Completion reply
-    //'200' : 'Command okay.',
+
+    OK_COMMAND : {
+        code : '200',
+        description : 'Command okay.'
+    },
     
     POSITIVE_COMMAND_NOT_IMPLEMENTED : {
         code : '202',
@@ -636,7 +713,12 @@ FTPServer.prototype.REPLY =
     },
     //'211' : 'System status, or system help reply.',
     //'212' : 'Directory status.',
-    //'213' : 'File status.',
+
+    FILE_STATUS_213 : {
+        code : '213',
+        description : '',
+        rfc959_description : 'File status.'
+    },
     //'214' : 'Help message.',
     SYSTEM_TYPE : {
         code : '215',
@@ -673,7 +755,12 @@ FTPServer.prototype.REPLY =
         code : '230',
         description : 'User logged in, proceed.'
     },
-  //  '250' : 'Requested file action okay, completed.',
+
+    FILE_ACTION_OK_250 : {
+        code : '250',
+        description : 'Requested file action okay, completed.'
+    },
+
     OK_PATH : {
         code :'257',
         description : '',
@@ -710,7 +797,7 @@ FTPServer.prototype.REPLY =
         code : '500',
         description : 'Syntax error, command unrecognized.'
     },
-    SYNTAX_ERROR_IN_ARGUMENETS : {
+    SYNTAX_ERROR_IN_ARGUMENTS : {
         code : '501',
         description : 'Syntax error in parameters or arguments.'
     },
@@ -723,7 +810,11 @@ FTPServer.prototype.REPLY =
         description : 'Bad sequence of commands.'
     },
 
-    //'504' : 'Command not implemented for that parameter.',
+    COMMAND_NOT_IMPLEMENTED_FOR_PARAMETER_504: {
+        code : '504',
+        description : 'Command not implemented for that parameter.'
+    },
+
     NOT_LOGGED_IN : {
       code : '530',
       description : 'Not logged in.'
@@ -823,72 +914,94 @@ FTPServer.prototype.COMMAND = {
     SIZE : 'SIZE'
 };
 
-function User(controlSocket,configuration,ftpServer)
-{
-   // console.log("User control socket",controlSocket);
-    this.ftpServer = ftpServer; // Allows access to methods
-    this.controlSocket = controlSocket;
-    //this.dataSockets = [];
-    this.ip = this.getSocketRemoteAddress(controlSocket);
-    this.command = {
-       line : '',
-       command : undefined,
-       arguments : undefined
+    // http://www.ietf.org/rfc/rfc959.txt p. 11
+    FTPServer.prototype.DATATYPE = {
+       'A' : 'ASCII',
+       'E' : 'EBCDIC',
+       'I' : 'IMAGE'
     };
 
-    this.name = undefined;
-    this.password = undefined;
+    function User(controlSocket,configuration,ftpServer)
+    {
+       // console.log("User control socket",controlSocket);
+        this.ftpServer = ftpServer; // Allows access to methods
+        this.controlSocket = controlSocket;
+        //this.dataSockets = [];
+        this.ip = this.getSocketRemoteAddress(controlSocket);
+        this.command = {
+           line : '',
+           command : undefined,
+           arguments : undefined
+        };
 
-    this.loggedIn = false;
+        this.name = undefined;
+        this.password = undefined;
 
-    this.retrieve = {
-        pathname : undefined
+        this.loggedIn = false;
+
+        this.retrieve = {
+            pathname : undefined
+        };
+
+        this.store = {
+            pathname : undefined
+        };
+
+
+        //this.history = []; // Session history of commands
+
+        this.configuration = configuration;
+
+       // this.mode = this.MODE.ACTIVE;
+
+       // this.dataBuffer = [];
+
+        // i.e LIST command received before user is connected to data server
+        this.dataConnectCB = [];
+
+        this.dataServer = undefined;
+
+        this.dataSockets = [];
+
+        this.dataRepresentation = this.setEncoding(this.ENCODING.ASCII); // Default to 7-bit ASCII, high order bit 0 (should be the same as the old NVT ASCII)
+    }
+
+    User.prototype.setEncoding = function (encoding)
+    {
+        this.dataRepresentation = encoding;
     };
 
-    this.store = {
-        pathname : undefined
+    // http://www.ietf.org/rfc/rfc959.txt p.6 : "Type implies certain transformations between the time of data storage and data transfer."
+    User.prototype.ENCODING = {
+        // http://nodejs.org/api/buffer.html : "for 7 bit ASCII data only. This encoding method is very fast, and will strip the high bit if set"
+        ASCII : 'ascii',
+        // http://nodejs.org/api/buffer.html : "Multibyte encoded Unicode characters. Many web pages and other document formats use UTF-8"
+        UTF8 : 'utf8'
     };
 
+    User.prototype._createDataServer = function ()
+    {
+        console.log('Creating new data server');
+        var dataServer;
 
-    //this.history = []; // Session history of commands
+        dataServer = net.createServer();
+         this.dataServer = dataServer;
 
-    this.configuration = configuration;
+        dataServer.on('connection',this.onDataServerConnection.bind(this,dataServer));
 
-   // this.mode = this.MODE.ACTIVE;
+        dataServer.on('close',this.onDataServerClose.bind(this,dataServer));
 
-   // this.dataBuffer = [];
+        dataServer.on('error',this.onDataServerError.bind(this,dataServer));
 
-    // i.e LIST command received before user is connected to data server
-    this.dataConnectCB = [];
+        dataServer.maxConnections =  1;
+        console.log('Data server max connections',dataServer.maxConnections);
 
-    this.dataServer = undefined;
+        dataServer.listen(0,this.configuration.host,this.onDataServerListening.bind(this,dataServer)); // Choose random port
+        // Linux : cat /proc/sys/net/ipv4/ip_local_port_range 32768 - 61000 port range for ephemeral ports
+        // http://en.wikipedia.org/wiki/Ephemeral_port
+        // http://nodejs.org/api/net.html#net_server_listen_port_host_backlog_callback
 
-    this.dataSockets = [];
-}
-
-User.prototype._createDataServer = function ()
-{
-    console.log('Creating new data server');
-    var dataServer;
-
-    dataServer = net.createServer();
-     this.dataServer = dataServer;
-
-    dataServer.on('connection',this.onDataServerConnection.bind(this,dataServer));
-
-    dataServer.on('close',this.onDataServerClose.bind(this,dataServer));
-
-    dataServer.on('error',this.onDataServerError.bind(this,dataServer));
-
-    dataServer.maxConnections =  1;
-    console.log('Data server max connections',dataServer.maxConnections);
-
-    dataServer.listen(0,this.configuration.host,this.onDataServerListening.bind(this,dataServer)); // Choose random port
-    // Linux : cat /proc/sys/net/ipv4/ip_local_port_range 32768 - 61000 port range for ephemeral ports
-    // http://en.wikipedia.org/wiki/Ephemeral_port
-    // http://nodejs.org/api/net.html#net_server_listen_port_host_backlog_callback
-
-};
+    };
 
 // In case user request multiple PASV commands in the same session, there must be a way of closing the previous data server and  ending the users attached to the server
 User.prototype.tryDataServerClose = function (server)
@@ -896,7 +1009,7 @@ User.prototype.tryDataServerClose = function (server)
     var dataServer;
 
      try {
-            console.log("TRYING to close data server");
+
            if (!server)
               dataServer = this.dataServer;
          else
@@ -1016,27 +1129,29 @@ User.prototype.attachDefaultDataEventListeners = function (dataSocket,dataServer
       dataSocket.on('close',this.onDataClose.bind(this,dataSocket,dataServer));
 };
 
-// 'Connection'-event for data server, i.e the moment when the user connects on the data connection
-User.prototype.onDataServerConnection = function (dataServer,dataSocket)
-{
-    var connectCB;
+    // 'Connection'-event for data server, i.e the moment when the user connects on the data connection
+    User.prototype.onDataServerConnection = function (dataServer,dataSocket)
+    {
+        var connectCB;
 
-    console.log('New data connection from '+this.getSocketRemoteAddress(dataSocket));
-    this.dataSockets.push(dataSocket);
+        dataSocket.setEncoding(this.dataRepresentation);
 
-    this.attachDefaultDataEventListeners(dataSocket,dataServer);
+        console.log('New data connection from '+this.getSocketRemoteAddress(dataSocket));
+        this.dataSockets.push(dataSocket);
 
-    // Only take the first since FIN is used to signal EOF in passive mode
+        this.attachDefaultDataEventListeners(dataSocket,dataServer);
 
-    connectCB = this.dataConnectCB.shift();
-    if (typeof connectCB === 'function')
-        connectCB();
+        // Only take the first since FIN is used to signal EOF in passive mode
 
-    this.dataConnectCB = [];
+        connectCB = this.dataConnectCB.shift();
+        if (typeof connectCB === 'function')
+            connectCB();
 
-    this.dataServer.close(); // Only allow one connection, then close
+        this.dataConnectCB = [];
 
-};
+        this.dataServer.close(); // Only allow one connection, then close
+
+    };
 
 User.prototype.onDataServerClose = function (dataServer)
 {
@@ -1128,6 +1243,8 @@ var test = new Test(ftpServer);
 
 function MemoryFS()
 {
+    this.wd = '/';
+    this.file = "HelloWorldHelloWorldHelloWorldHelloWorldHelloWorld".slice(0,25);
 }
 
 MemoryFS.prototype.ls = function ()
@@ -1147,11 +1264,33 @@ MemoryFS.prototype.ls = function ()
     return '-rw-rw-r--    1 11113      300                35 Jun 27 11:44 helloworld.txt\r\n';
 };
 
+MemoryFS.prototype.cwd = function (pathname)
+{
+    this.wd = pathname;
+
+};
+
 MemoryFS.prototype.pwd = function ()
 
     {
-        return "/";
+        return this.wd;
     };
+
+MemoryFS.prototype.exists = function (pathname)
+{
+    return true;
+};
+
+MemoryFS.prototype.get = function (pathname)
+{
+   // return (new Buffer(35)).fill(0);
+    return this.file;
+};
+
+MemoryFS.prototype.size = function (pathname)
+{
+    return this.file.length;
+};
 
 
 })();
