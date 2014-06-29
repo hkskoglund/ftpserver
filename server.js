@@ -299,7 +299,7 @@ FTPServer.prototype.protocolIntepreter = function (user)
                 this.reply(user.controlSocket,this.REPLY.SYNTAX_ERROR_IN_ARGUMENTS,'No pathname to file given as argument');
 
             if (!this.fileSystem.exists(user.retrieve.pathname))
-                this.reply(user.controlSocket,this.REPLY.REQUESTED_ACTION_NOT_TAKEN,'File does not exist');
+                this.reply(user.controlSocket,this.REPLY.REQUESTED_ACTION_NOT_TAKEN_550,'File does not exist');
 
 
             if (!user.isConnected()) {
@@ -328,13 +328,13 @@ FTPServer.prototype.protocolIntepreter = function (user)
 
             switch (dataType)
             {
-                    case 'I' :
+                    case FTPServer.prototype.DATATYPE.IMAGE :
 
                         user.setEncoding(user.ENCODING.UTF8);
                         this.reply(user.controlSocket,this.REPLY.OK_COMMAND,'UTF8 data encoding');
                         break;
 
-                    case 'A' :
+                    case FTPServer.prototype.DATATYPE.ASCII :
 
                         user.setEncoding(user.ENCODING.ASCII);
                         this.reply(user.controlSocket,this.REPLY.OK_COMMAND,'ASCII data encoding');
@@ -342,7 +342,7 @@ FTPServer.prototype.protocolIntepreter = function (user)
 
                     default :
 
-                        this.reply(user.controlSocket,this.REPLY.COMMAND_NOT_IMPLEMENTED_FOR_PARAMETER_504);
+                        this.reply(user.controlSocket,this.REPLY.COMMAND_NOT_IMPLEMENTED_FOR_PARAMETER_504); // EBCDIC not supported
                         break;
             }
 
@@ -365,12 +365,21 @@ FTPServer.prototype.protocolIntepreter = function (user)
             // Chrome: CWD /welcome.msg
             // Response : 550 /welcome.msg not a directory (ftp.uninett.no)
 
-             this.fileSystem.cwd(path.dirname(user.command.arguments[0]));
-              this.reply(user.controlSocket,this.REPLY.FILE_ACTION_OK_250,'Current directory is '+this.fileSystem.pwd());
+            // Path refers to a file
+            // TO DO : logic to decide if argument is a directory or a file
+            if (user.command.arguments[0] === '/helloworld.txt')
+            {
+                this.reply(user.controlSocket,this.REPLY.REQUESTED_ACTION_NOT_TAKEN_550,'Impossible to cwd to a file.');
+            } else {
+                    this.fileSystem.cwd(path.dirname(user.command.arguments[0]));
+                this.reply(user.controlSocket,this.REPLY.FILE_ACTION_OK_250,'Current directory is '+this.fileSystem.pwd());
+            }
+
             break;
 
 
         // Chrome uses the SIZE command after the PWD command (size of directory)
+        // Chrome requires this command to be implemented, otherwise -> QUIT
         case FTPServer.prototype.COMMAND.SIZE:
             this.reply(user.controlSocket,this.REPLY.FILE_STATUS_213,this.fileSystem.size(user.command.arguments[0]));
             break;
@@ -471,7 +480,7 @@ FTPServer.prototype.onControlEnd = function (user,data)
 
     user.tryDataServerClose(); // Close data server
 
-    user.showControlSocketStatistics();
+    user.showSocketStatistics(user.controlSocket,'Control connection');
 
     this.removeUserFromDefaultQueues(user);
 };
@@ -785,7 +794,7 @@ FTPServer.prototype.REPLY =
     },
     //'426' : 'Connection closed; transfer aborted.',
 
-   /* REQUESTED_ACTION_NOT_TAKEN : {
+   /* REQUESTED_ACTION_NOT_TAKEN_550 : {
         code : '450',
         description : 'Requested file action not taken.'
     },*/
@@ -822,7 +831,7 @@ FTPServer.prototype.REPLY =
 
     //'532' : 'Need account for storing files.',
 
-    REQUESTED_ACTION_NOT_TAKEN : {
+    REQUESTED_ACTION_NOT_TAKEN_550 : {
         code : '550',
         description : 'Requested action not taken. File unavailable (e.g., file not found, no access).'
     }
@@ -916,9 +925,9 @@ FTPServer.prototype.COMMAND = {
 
     // http://www.ietf.org/rfc/rfc959.txt p. 11
     FTPServer.prototype.DATATYPE = {
-       'A' : 'ASCII',
-       'E' : 'EBCDIC',
-       'I' : 'IMAGE'
+       ASCII : 'A',
+       EBCDIC : 'E',
+       IMAGE : 'I'
     };
 
     function User(controlSocket,configuration,ftpServer)
@@ -1083,6 +1092,7 @@ User.prototype.onDataEnd = function (dataSocket)
 {
      var indx;
     console.log('Data connection: User closed connection, received FIN',this.getSocketRemoteAddress(dataSocket));
+    this.showSocketStatistics(dataSocket,'Data connection');
 
    //  this.ftpServer.reply(this.controlSocket,this.ftpServer.REPLY.CLOSING_DATA_CONNECTION_226);
 
@@ -1179,17 +1189,10 @@ User.prototype.getSocketRemoteAddress = function (socket)
 };
 
 
-User.prototype.showControlSocketStatistics = function ()
+User.prototype.showSocketStatistics = function (socket,header)
 {
-    console.info('Control connection:  w: '+this.controlSocket.bytesWritten+ ' r: '+this.controlSocket.bytesRead);
+    console.info(header+' w : '+socket.bytesWritten+ 'b r: '+socket.bytesRead+'b');
 };
-
-/*
-User.prototype.MODE = {
-    ACTIVE : 'active',
-    PASSIVE : 'passive'
-};
-*/
 
 
 var ftpServer = new FTPServer({name : CONFIG.HOST_NAME,
@@ -1261,7 +1264,9 @@ MemoryFS.prototype.ls = function ()
 
     // 'drwxrwxr-x   10 11113      300              4096 Jun 20 11:01 FreeBSD\r\n'+
 
-    return '-rw-rw-r--    1 11113      300                35 Jun 27 11:44 helloworld.txt\r\n';
+    return 'drwxr-xr-x   22 0          0                4096 Dec 20  2013 .\r\n' +
+        'drwxr-xr-x   22 0          0                4096 Dec 20  2013 ..\r\n'+
+    '-rw-rw-r--    1 11113      300                35 Jun 27 11:44 helloworld.txt\r\n';
 };
 
 MemoryFS.prototype.cwd = function (pathname)
